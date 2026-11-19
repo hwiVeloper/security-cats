@@ -127,6 +127,8 @@ class ServerScanResult:
     files: list[FileStat] = field(default_factory=list)
     truncated: bool = False
     elapsed_sec: float = 0.0
+    # (코드, 경로): unreadable / decompress_failed 등 원격 측 파일 오류
+    file_errors: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def oldest_date(self) -> str | None:
