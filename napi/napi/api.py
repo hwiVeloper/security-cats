@@ -353,6 +353,15 @@ class Api:
         p.event.set()
         return {"ok": True}
 
+    def _shutdown(self) -> None:
+        """창이 닫힐 때 부른다 (JS에는 노출하지 않음). 진행 중인 스캔을 모두 취소하고
+        기다리는 호스트 키 확인을 거절해서, 수집 스레드가 곧바로 끝나게 한다."""
+        with self._lock:
+            scans = [self._scans[i] for i in self._active.values()]
+        for scan in scans:
+            scan.cancel.set()
+            scan.reject_all()
+
     @_safe
     def cancel_scan(self, scan_id: str) -> dict:
         scan = self._scan(scan_id)

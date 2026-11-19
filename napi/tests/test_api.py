@@ -725,3 +725,161 @@ def test_ui_index_path(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     assert entry.ui_index_path() == tmp_path / "napi" / "ui" / "index.html"
+
+
+# ------------------------------------------------------------- shutdown
+
+
+def test_shutdown_cancels_active_scans(env):
+    api, holder = env["api"], env["holder"]
+    reached = threading.Event()
+    answers = []
+
+    def until_cancel(col, servers_, since, progress, cancel):
+        reached.set()
+        answers.append(col.prompt("10.0.0.1", 22, "ssh-ed25519", "SHA256:abc"))
+        assert cancel.wait(5)
+        return [ServerScanResult(s.name, False, error="취소됨") for s in servers_]
+
+    holder["behavior"] = until_cancel
+    scan_id = api.start_scan(SVC, "365")["scan_id"]
+    assert reached.wait(5)
+    wait_for(lambda: api.get_scan_progress(scan_id)["hostkey_pending"])
+    started = time.monotonic()
+    api._shutdown()  # noqa: SLF001 — 앱 종료 시 __main__이 부른다
+    p = wait_phase(api, scan_id)
+    assert time.monotonic() - started < 2
+    assert p["phase"] == "cancelled"
+    assert answers == [False]
+    assert api.get_result(SVC) is None
+    api._shutdown()  # 활성 스캔이 없어도 안전하다
+
+
+# ----------------------------------------------------------- WebView2
+
+
+def fake_registry(values):
+    def read(hive, path, name):
+        return values.get((hive, path, name))
+    return read
+
+
+NET = ("HKEY_LOCAL_MACHINE", r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full", "Release")
+RUNTIME = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+HKLM64 = ("HKEY_LOCAL_MACHINE",
+          rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{RUNTIME}", "pv")
+HKLM32 = ("HKEY_LOCAL_MACHINE", rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{RUNTIME}", "pv")
+HKCU = ("HKEY_CURRENT_USER", rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{RUNTIME}", "pv")
+CANARY_HKCU = ("HKEY_CURRENT_USER",
+               r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{65C35B14-6C1D-4122-AC46-7148CC9D6497}",
+               "pv")
+
+
+@pytest.mark.parametrize("values, machine, expected", [
+    ({NET: 528040, HKLM64: "131.0.2903.70"}, "AMD64", True),
+    ({NET: 528040, HKCU: "120.0.1.0"}, "AMD64", True),
+    ({NET: 528040, CANARY_HKCU: "133.0.1.0"}, "AMD64", True),
+    ({NET: 528040, HKLM32: "131.0.2903.70"}, "x86", True),
+    ({NET: 528040, HKLM32: "131.0.2903.70"}, "AMD64", False),  # pywebview도 이 경로를 안 본다
+    ({NET: 528040}, "AMD64", False),
+    ({NET: 528040, HKLM64: "0.0.0.0"}, "AMD64", False),
+    ({NET: 528040, HKLM64: "86.0.621.9"}, "AMD64", False),
+    ({NET: 528040, HKLM64: "86.0.622.0"}, "AMD64", True),
+    ({NET: 528040, HKLM64: "garbage"}, "AMD64", False),
+    ({NET: 394801, HKLM64: "131.0.2903.70"}, "AMD64", False),  # .NET 4.6.2 미만
+    ({HKLM64: "131.0.2903.70"}, "AMD64", False),
+])
+def test_webview2_available(values, machine, expected):
+    assert entry.webview2_available(read=fake_registry(values), machine=machine) is expected
+
+
+def test_webview2_available_real_registry_does_not_raise():
+    assert entry.webview2_available() in (True, False)
+
+
+class FakeWebview:
+    class _Handlers:
+        def __init__(self):
+            self.items = []
+
+        def __iadd__(self, fn):
+            self.items.append(fn)
+            return self
+
+    def __init__(self, start_error=None):
+        self.start_error = start_error
+        self.created = []
+        self.started = []
+
+    def create_window(self, title, **kw):
+        win = type("W", (), {})()
+        win.events = type("E", (), {})()
+        win.events.closed = self._Handlers()
+        self.created.append((title, kw, win))
+        return win
+
+    def start(self, **kw):
+        self.started.append(kw)
+        if self.start_error:
+            raise self.start_error
+
+
+@pytest.fixture
+def main_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("NAPI_HOME", str(tmp_path))
+    boxes = []
+    monkeypatch.setattr(entry, "_message_box", boxes.append)
+    shutdowns = []
+    real = Api._shutdown
+
+    def spy(self):
+        shutdowns.append(self)
+        real(self)
+
+    monkeypatch.setattr(Api, "_shutdown", spy)
+    return boxes, shutdowns
+
+
+def test_main_without_webview2_shows_message_and_no_window(monkeypatch, main_env):
+    boxes, _ = main_env
+    fake = FakeWebview()
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(entry, "webview2_available", lambda: False)
+    with pytest.raises(SystemExit) as exc:
+        entry.main()
+    assert exc.value.code == 1
+    assert boxes == [entry.WEBVIEW2_MISSING]
+    assert entry.WEBVIEW2_MISSING == ("WebView2 런타임이 필요해요. "
+                                      "https://go.microsoft.com/fwlink/p/?LinkId=2124703 "
+                                      "에서 설치해 주세요")
+    assert fake.created == [] and fake.started == []
+
+
+def test_main_opens_window_and_shuts_down(monkeypatch, main_env):
+    boxes, shutdowns = main_env
+    fake = FakeWebview()
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(entry, "webview2_available", lambda: True)
+    entry.main()
+    (title, kw, win), = fake.created
+    assert title == "napi — 잠자는 API를 찾아요"
+    assert kw["url"] == str(entry.ui_index_path())
+    assert isinstance(kw["js_api"], Api)
+    assert (kw["width"], kw["height"], kw["min_size"]) == (1280, 820, (1000, 640))
+    assert fake.started == [{"gui": "edgechromium"}]
+    assert len(win.events.closed.items) == 1
+    assert shutdowns == [kw["js_api"]]
+    assert boxes == []
+
+
+def test_main_start_failure_shows_generic_message(monkeypatch, main_env, capsys):
+    boxes, shutdowns = main_env
+    fake = FakeWebview(start_error=RuntimeError("boom detail"))
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(entry, "webview2_available", lambda: True)
+    with pytest.raises(SystemExit) as exc:
+        entry.main()
+    assert exc.value.code == 1
+    assert boxes == ["napi를 시작하지 못했어요: RuntimeError"]
+    assert "boom detail" in capsys.readouterr().err  # traceback은 stderr로
+    assert len(shutdowns) == 1
