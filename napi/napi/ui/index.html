@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>napi — 잠자는 API를 찾아요</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side" id="side" aria-label="서비스 목록">
+    <div class="logo" id="logo">napi</div>
+    <nav class="svc-list" id="svc-list"></nav>
+    <button type="button" class="add" id="add-service">＋ 서비스 추가</button>
+    <div class="side-foot">
+      숫자 = 잠든 API(잠듦+영면) 개수<br>
+      설정: <span class="cfg-path" id="cfg-path">—</span><br>
+      <button type="button" class="link" id="open-settings">⚙ 설정</button>
+    </div>
+  </aside>
+  <main class="content" id="content" aria-live="polite"></main>
+</div>
+<div class="backdrop" id="backdrop"></div>
+<aside class="detail" id="detail" aria-label="API 상세" aria-hidden="true"></aside>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="js/cat.js"></script>
+<script src="js/render.js"></script>
+<script src="js/mock-api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
