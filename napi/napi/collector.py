@@ -29,6 +29,7 @@ _CLIENT_GRACE_SEC = 60  # 원격 timeout 뒤에도 끝나지 않으면 PC 쪽에
 _POLL_SEC = 0.05
 _PKILL_WAIT_SEC = 5
 _CHUNK = 65536
+_STDERR_CAP = 64 * 1024  # stderr는 앞부분만 둔다 (오류 문구에는 앞 200자만 쓴다)
 
 _CANCELLED = "취소됨"
 _TIMED_OUT = "시간 초과"
@@ -213,30 +214,31 @@ class Collector:
         deadline = time.monotonic() + self._settings.remote_timeout_sec + _CLIENT_GRACE_SEC
         out, err = bytearray(), bytearray()
         while True:
-            got = False
-            # stdout/stderr를 번갈아 읽어 한쪽 버퍼가 가득 차 멈추는 일이 없게 한다.
-            if chan.recv_ready():
-                out += chan.recv(_CHUNK)
-                got = True
-            if chan.recv_stderr_ready():
-                err += chan.recv_stderr(_CHUNK)
-                got = True
-            if got:
-                continue
-            if chan.exit_status_ready():
-                break
             if cancel.is_set() or time.monotonic() >= deadline:
                 error = _CANCELLED if cancel.is_set() else _TIMED_OUT
                 chan.close()
                 self._kill_remote(client, server.user, token)
                 return ServerScanResult(server=server.name, ok=False, error=error,
                                         elapsed_sec=time.monotonic() - start)
+            # EOF를 버퍼보다 먼저 확인한다. EOF 뒤에는 새 데이터가 오지 않으므로,
+            # 이번에 읽을 것이 없으면 버퍼가 정말로 비었다는 뜻이다.
+            # (OpenSSH sshd는 exit-status를 마지막 파이프 데이터보다 먼저 보낼 수 있어서
+            # exit_status_ready()만으로는 끝났다고 볼 수 없다.)
+            eof = chan.eof_received or chan.closed
+            got = False
+            # stdout/stderr를 번갈아 읽어 한쪽 버퍼가 가득 차 멈추는 일이 없게 한다.
+            if chan.recv_ready():
+                out += chan.recv(_CHUNK)
+                got = True
+            if chan.recv_stderr_ready():
+                data = chan.recv_stderr(_CHUNK)
+                err += data[:max(0, _STDERR_CAP - len(err))]
+                got = True
+            if got:
+                continue
+            if eof and chan.exit_status_ready():
+                break
             cancel.wait(_POLL_SEC)
-        # exit-status는 같은 채널의 데이터보다 늦게 도착하므로 남은 버퍼만 비우면 된다.
-        while chan.recv_ready():
-            out += chan.recv(_CHUNK)
-        while chan.recv_stderr_ready():
-            err += chan.recv_stderr(_CHUNK)
         exit_code = chan.recv_exit_status()
         return parse_remote_output(server.name, out.decode("utf-8", errors="replace"),
                                    err.decode("utf-8", errors="replace"), exit_code,

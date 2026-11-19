@@ -26,34 +26,60 @@ HOST_KEY = paramiko.RSAKey.generate(1024)
 # ---------------------------------------------------------------- fake paramiko
 
 class FakeChannel:
-    def __init__(self, stdout=b"", stderr=b"", exit_code=0, delay=0.0, hold=False):
+    """paramiko Channel 흉내.
+
+    - 보통: `delay` 뒤에 stdout/stderr 데이터, EOF, exit status가 한꺼번에 준비된다.
+    - `tail`: exit status는 `delay`에 준비되지만, 마지막 stdout 조각과 EOF는
+      `tail_delay`만큼 늦게 온다 (OpenSSH sshd가 exit-status를 먼저 보내는 경우).
+    - `hold`: 아무것도 오지 않는다 (끝나지 않는 원격 명령).
+    - `stream`: stdout이 끝없이 계속 들어온다.
+    """
+
+    def __init__(self, stdout=b"", stderr=b"", exit_code=0, delay=0.0, hold=False,
+                 tail=b"", tail_delay=0.0, stream=False):
+        now = time.monotonic()
         self._out = stdout
         self._err = stderr
+        self._tail = tail
         self._exit = exit_code
-        self._ready_at = time.monotonic() + delay
+        self._ready_at = now + delay
+        self._tail_at = now + delay + tail_delay
         self._hold = hold
-        self.closed = threading.Event()
+        self._stream = stream
+        self.closed = False
 
-    def _finished(self):
-        return (not self._hold and not self.closed.is_set()
-                and time.monotonic() >= self._ready_at)
+    def _arrived(self, at):
+        return not self._hold and not self.closed and time.monotonic() >= at
+
+    def _pump(self):
+        if self._tail and self._arrived(self._tail_at):
+            self._out, self._tail = self._out + self._tail, b""
+
+    @property
+    def eof_received(self):
+        return not self._stream and self._arrived(self._tail_at)
 
     def recv_ready(self):
-        return self._finished() and bool(self._out)
+        if self._stream:
+            return not self.closed
+        self._pump()
+        return self._arrived(self._ready_at) and bool(self._out)
 
     def recv(self, n):
+        if self._stream:
+            return b"x" * min(n, 16)  # 작게 받아 메모리를 아낀다
         data, self._out = self._out[:n], self._out[n:]
         return data
 
     def recv_stderr_ready(self):
-        return self._finished() and bool(self._err)
+        return not self._stream and self._arrived(self._ready_at) and bool(self._err)
 
     def recv_stderr(self, n):
         data, self._err = self._err[:n], self._err[n:]
         return data
 
     def exit_status_ready(self):
-        return self._finished()
+        return not self._stream and self._arrived(self._ready_at)
 
     def recv_exit_status(self):
         return self._exit
@@ -62,7 +88,7 @@ class FakeChannel:
         pass
 
     def close(self):
-        self.closed.set()
+        self.closed = True
 
 
 class FakeStream:
@@ -127,7 +153,9 @@ class FakeClient:
         if len(self.commands) == 1:
             b = self.world.behaviors[self.connect_kwargs["hostname"]]
             ch = FakeChannel(b.get("stdout", OK_STDOUT), b.get("stderr", b""),
-                             b.get("exit", 0), b.get("delay", 0.0), b.get("hold", False))
+                             b.get("exit", 0), b.get("delay", 0.0), b.get("hold", False),
+                             b.get("tail", b""), b.get("tail_delay", 0.0),
+                             b.get("stream", False))
             self.world.executing.set()
         else:
             ch = FakeChannel()
@@ -259,7 +287,7 @@ def test_cancel_closes_and_marks_cancelled(tmp_path):
     assert len(cl.commands) == 2
     token = TOKEN_RE.search(cl.commands[0]).group(0)
     assert cl.commands[1] == f"pkill -TERM -u app -f {token}"
-    assert cl.channels[0].closed.is_set()
+    assert cl.channels[0].closed
     assert cl.closed
     assert progress.phases("a") == ["connecting", "aggregating", "cancelled"]
 
@@ -284,7 +312,7 @@ def test_client_wall_clock_timeout(tmp_path, monkeypatch):
     [r] = c.collect([server("a", "10.0.0.1")], None, progress, threading.Event())
     assert not r.ok and r.error == "시간 초과"
     [cl] = world.clients
-    assert cl.channels[0].closed.is_set() and cl.closed
+    assert cl.channels[0].closed and cl.closed
     assert cl.commands[1].startswith("pkill -TERM -u app -f napi-scan-")
     assert progress.phases("a")[-1] == "failed"
 
@@ -335,7 +363,7 @@ def test_progress_phases(tmp_path):
     assert progress.phases("b") == ["connecting", "aggregating", "failed"]
 
 
-def test_large_stderr_and_stdout_are_read_fully(tmp_path):
+def test_large_stdout_with_large_stderr_is_read_fully(tmp_path):
     big_err = b"warn\n" * 50000
     big_out = b"R\tGET\t/v1/y\t2xx\t1\t20260101\t20260101\n" * 20000 + OK_STDOUT
     world = World({"10.0.0.1": {"stdout": big_out, "stderr": big_err}})
@@ -404,3 +432,59 @@ def test_key_auth_wrong_passphrase_hides_secret(tmp_path):
     assert not r.ok and r.error == "키파일 암호가 맞지 않거나 읽을 수 없는 키파일이에요"
     assert "Secret" not in repr(r)
     assert world.clients == []
+
+
+def test_exit_status_before_last_stdout_chunk_still_ok(tmp_path):
+    tail = b"D\tdone\n"
+    assert OK_STDOUT.endswith(tail)
+    head = OK_STDOUT[:-len(tail)]
+    world = World({"10.0.0.1": {"stdout": head, "tail": tail, "tail_delay": 0.3}})
+    c, _ = make(world, tmp_path)
+    progress = Progress()
+    [r] = c.collect([server("a", "10.0.0.1")], None, progress, threading.Event())
+    assert r.ok, r.error
+    assert progress.phases("a")[-1] == "done"
+
+
+def test_continuous_output_does_not_block_cancel(tmp_path):
+    world = World({"10.0.0.1": {"stream": True}})
+    c, _ = make(world, tmp_path)
+    cancel = threading.Event()
+    out = []
+    t = threading.Thread(target=lambda: out.extend(
+        c.collect([server("a", "10.0.0.1")], None, Progress(), cancel)))
+    t.start()
+    assert world.executing.wait(5)
+    time.sleep(0.1)
+    cancel.set()
+    t.join(5)
+    assert not t.is_alive()
+    [r] = out
+    assert r.error == "취소됨"
+    assert world.clients[0].commands[1].startswith("pkill -TERM -u app -f napi-scan-")
+
+
+def test_continuous_output_does_not_block_wall_clock(tmp_path, monkeypatch):
+    monkeypatch.setattr(collector_mod, "_CLIENT_GRACE_SEC", 0)
+    world = World({"10.0.0.1": {"stream": True}})
+    c, _ = make(world, tmp_path, settings=Settings(remote_timeout_sec=1))
+    started = time.monotonic()
+    [r] = c.collect([server("a", "10.0.0.1")], None, Progress(), threading.Event())
+    assert r.error == "시간 초과"
+    assert time.monotonic() - started < 5
+
+
+def test_stderr_buffer_is_capped(tmp_path, monkeypatch):
+    seen = {}
+    real_parse = collector_mod.parse_remote_output
+
+    def spy(server, stdout, stderr, exit_code, elapsed):
+        seen["stderr_len"] = len(stderr)
+        return real_parse(server, stdout, stderr, exit_code, elapsed)
+
+    monkeypatch.setattr(collector_mod, "parse_remote_output", spy)
+    world = World({"10.0.0.1": {"stderr": b"e" * (1024 * 1024)}})
+    c, _ = make(world, tmp_path)
+    [r] = c.collect([server("a", "10.0.0.1")], None, Progress(), threading.Event())
+    assert r.ok
+    assert seen["stderr_len"] == collector_mod._STDERR_CAP == 64 * 1024
