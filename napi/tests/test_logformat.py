@@ -99,6 +99,9 @@ def test_fixtures_parse(name, fmt):
     ("/v1/한글한글한글한글한글한글한글한글한글한글한글한글", "/v1/한글한글한글한글한글한글한글한글한글한글한글한글"),
     ("/v1/١٢٣", "/v1/١٢٣"),  # non-ASCII digits are not digits
     ("/v1/x/;a=b/y", "/v1/x/y"),
+    ("/v1/검색검색검%20a", "/v1/검색검색검%20a"),  # 19 bytes (9 chars): unchanged
+    ("/v1/검색검색검%20ab", "/v1/{*}"),  # 20 bytes
+    ("/v1/검색검색검색%20", "/v1/{*}"),  # 11 chars but 21 bytes
 ])
 def test_normalize_cases(path, expected):
     assert normalize_path(path) == expected
@@ -145,3 +148,22 @@ def test_sample_line_reports_error():
     res = run_sample_line('x "-" 400 0', "webtob", None)
     assert res["ok"] is False
     assert res["error"] == "이 형식으로 읽을 수 없는 줄이에요"
+
+
+def test_custom_unicode_space_does_not_split():
+    fmt = CustomFormat(method_field=2, path_field=3, status_field=4,
+                       time_field=1, time_format="iso8601")
+    line = "2026-11-18T10:00:00\tGET\t/v1/a\u3000b  200"
+    res = parse_line(line, "custom", fmt)
+    assert res == ParsedLine("GET", "/v1/a\u3000b", 200, "20261118")
+
+
+def test_crlf_line_parses():
+    line = ('10.0.0.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 200\r\n')
+    assert parse_line(line, "webtob") == ParsedLine("GET", "/a", 200, "20261118")
+
+
+@pytest.mark.parametrize("req", ['GET  /a HTTP/1.1', ' GET /a HTTP/1.1', 'GET\t/a  '])
+def test_request_line_awk_style_tokenizing(req):
+    line = f'1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "{req}" 200 1'
+    assert parse_line(line, "webtob") == ParsedLine("GET", "/a", 200, "20261118")
