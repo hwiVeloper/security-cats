@@ -9,7 +9,7 @@ description = "Swagger/OpenAPI 명세와 접근 로그를 비교해 사용되지
 requires-python = ">=3.12"
 dependencies = [
     "pywebview>=5",
-    "paramiko>=3",
+    "paramiko>=3.2",
     "PyYAML>=6",
     "requests",
 ]
