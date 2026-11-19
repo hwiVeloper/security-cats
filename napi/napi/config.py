@@ -59,6 +59,11 @@ def load_config(path: Path) -> AppConfig:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise ConfigError(f"설정 파일을 읽을 수 없습니다 ({path}): {e}") from e
+    except UnicodeDecodeError as e:
+        raise ConfigError(
+            f"설정 파일의 인코딩이 UTF-8이 아닙니다 ({path}). UTF-8로 저장해 주세요: {e}") from e
+    except OSError as e:
+        raise ConfigError(f"설정 파일을 열 수 없습니다 ({path}): {e}") from e
     if data is None:
         return AppConfig(services=[])
     return _from_dict(data)

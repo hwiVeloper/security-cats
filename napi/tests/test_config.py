@@ -92,3 +92,19 @@ def test_scan_result_dates():
     assert r.oldest_date == "20251201"
     assert r.newest_date == "20260301"
     assert ServerScanResult("s", True).oldest_date is None
+
+
+def test_non_utf8_file_raises_config_error(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_bytes("services: []\n# 한글 주석\n".encode("cp949"))
+    with pytest.raises(ConfigError) as e:
+        load_config(p)
+    assert "설정 파일" in str(e.value)
+
+
+def test_unreadable_path_raises_config_error(tmp_path):
+    d = tmp_path / "dir.yaml"
+    d.mkdir()  # 디렉터리를 파일처럼 읽으면 OSError
+    with pytest.raises(ConfigError) as e:
+        load_config(d)
+    assert "설정 파일" in str(e.value)
