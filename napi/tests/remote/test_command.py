@@ -1,0 +1,159 @@
+import re
+import shlex
+
+import pytest
+
+from napi.models import CustomFormat, ServerConfig, Settings
+from napi.remote.awk_program import awk_program
+from napi.remote.command import build_pipeline, build_remote_command, split_glob
+
+TOKEN = "napi-scan-0a1b2c3d"
+
+
+def make_server(**kw):
+    base = dict(name="web1", host="10.0.0.1", user="app",
+                log_glob="/webtob/log/access.log*")
+    base.update(kw)
+    return ServerConfig(**base)
+
+
+def shell_portions(server, settings, since):
+    """(원격 명령의 바깥 셸 부분, sh -c 본문의 셸 부분). awk 프로그램은 자리표시자로 바꾼다."""
+    prog_q = shlex.quote(awk_program(server.log_format, server.custom_format))
+    script = build_pipeline(server, settings, since)
+    assert script.count(prog_q) == 1
+    script_q = shlex.quote(script)
+    cmd = build_remote_command(server, settings, since, TOKEN)
+    assert cmd.count(script_q) == 1
+    return cmd.replace(script_q, "SCRIPT"), script.replace(prog_q, "AWK_PROGRAM")
+
+
+def test_split_glob():
+    assert split_glob("/webtob/log/access.log*") == ("/webtob/log", "access.log*")
+    assert split_glob("/access.log") == ("/", "access.log")
+
+
+def test_command_quotes_values():
+    server = make_server(log_glob="/x/it's/a*.log")
+    cmd = build_remote_command(server, Settings(), None, TOKEN)
+    assert "'\"'\"'" in cmd
+    script = build_pipeline(server, Settings(), None)
+    # 바깥 셸이 풀면 sh -c 본문이 그대로 한 인자로 넘어간다
+    assert script in shlex.split(cmd)
+    # 본문 안에서 find는 디렉터리와 패턴을 각각 한 인자로 받는다
+    words = shlex.split(script)
+    assert words[:3] == ["find", "/x/it's", "-maxdepth"]
+    assert words[words.index("-name") + 1] == "a*.log"
+
+
+def test_command_quotes_shell_metacharacters():
+    server = make_server(log_glob="/x/$(id)`id`;rm -rf ~/a b*.log")
+    script = build_pipeline(server, Settings(), None)
+    words = shlex.split(script)
+    assert words[1] == "/x/$(id)`id`;rm -rf ~"
+    assert words[words.index("-name") + 1] == "a b*.log"
+
+
+def test_command_contains_safety_wrappers():
+    cmd = build_remote_command(make_server(), Settings(), "20260522", TOKEN)
+    assert "timeout 3600" in cmd
+    assert "nice -n 19" in cmd
+    assert "LC_ALL=C awk" in cmd
+    assert "-newermt 2026-05-22" in cmd
+    assert "-v SINCE=20260522" in cmd
+    assert "-v MAXROWS=50000" in cmd
+    assert "-v TOP404=200" in cmd
+
+
+def test_command_shape_passes_token_as_dollar_zero():
+    """R2: timeout <sec> nice -n 19 [ionice -c3] sh -c '<script>' <token>"""
+    settings = Settings(remote_timeout_sec=120)
+    server = make_server()
+    cmd = build_remote_command(server, settings, None, TOKEN)
+    script = build_pipeline(server, settings, None)
+    assert cmd == (
+        "timeout 120 nice -n 19 "
+        "$(command -v ionice >/dev/null 2>/dev/null && echo ionice -c3) "
+        f"sh -c {shlex.quote(script)} {TOKEN}")
+    assert "NAPI_TOKEN" not in cmd
+
+
+def test_command_without_since_has_no_newermt():
+    cmd = build_remote_command(make_server(), Settings(), None, TOKEN)
+    assert "-newermt" not in cmd
+    assert "-v SINCE=0" in cmd
+
+
+@pytest.mark.parametrize("since", [None, "20260522"])
+@pytest.mark.parametrize("fmt,custom", [
+    ("webtob", None),
+    ("custom", CustomFormat(method_field=2, path_field=3, status_field=4,
+                            time_field=1, time_format="iso8601")),
+])
+def test_command_is_read_only(since, fmt, custom):
+    server = make_server(log_format=fmt, custom_format=custom)
+    for text in shell_portions(server, Settings(), since):
+        redirections = re.findall(r"[0-9]*>+&?[^\s;|&)]*", text)
+        assert redirections, text
+        assert set(redirections) <= {">/dev/null", "2>/dev/null"}, text
+        assert ">>" not in text
+        assert "<" not in text
+        for word in ("rm", "mv", "tee", "cp", "dd", "touch", "mkdir", "ln",
+                     "chmod", "truncate", "sed", "perl", "python"):
+            assert not re.search(rf"(^|[\s;|&(]){word}(\s|$)", text), (word, text)
+
+
+@pytest.mark.parametrize("fmt,custom", [
+    ("webtob", None),
+    ("custom", CustomFormat(method_field=2, path_field=3, status_field=4,
+                            time_field=1, time_format="clf")),
+])
+def test_awk_program_writes_no_files(fmt, custom):
+    prog = awk_program(fmt, custom)
+    assert not re.search(r"print[f]?[^\n;{}]*>", prog)
+    assert ">>" not in prog
+    assert "system(" not in prog
+    assert "getline" not in prog
+    # 외부 명령은 집계 결과를 정렬하는 sort | head 뿐이다
+    assert set(re.findall(r'"(sort [^"]*)"', prog)) == {
+        r"sort -t '\t' -k5,5nr 2>/dev/null | head -n ",
+        r"sort -t '\t' -k4,4nr 2>/dev/null | head -n ",
+    }
+
+
+def test_awk_program_has_no_gawk_extensions():
+    prog = awk_program("nginx_combined", None)
+    for ext in ("gensub", "asort", "strftime", "systime", "FPAT", "IGNORECASE",
+                "PROCINFO", "BEGINFILE", "ENDFILE", "**", "@include"):
+        assert ext not in prog, ext
+    assert not re.search(r"\{[0-9]+,?[0-9]*\}", prog.replace("{*}", "")), "interval expr"
+
+
+def test_awk_program_rejects_unknown_format():
+    with pytest.raises(ValueError):
+        awk_program("iis", None)
+    with pytest.raises(ValueError):
+        awk_program("custom", None)
+    with pytest.raises(ValueError):
+        awk_program("custom", CustomFormat(method_field=0, path_field=3, status_field=4,
+                                           time_field=1, time_format="clf"))
+
+
+@pytest.mark.parametrize("token", ["", "napi-scan-XYZ", "napi-scan-0a1b2c3d; rm -rf /",
+                                   "napi-scan-0a1b2c3"])
+def test_command_rejects_bad_token(token):
+    with pytest.raises(ValueError):
+        build_remote_command(make_server(), Settings(), None, token)
+
+
+@pytest.mark.parametrize("since", ["2026-05-22", "2026052", "20260522;", ""])
+def test_command_rejects_bad_since(since):
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(), Settings(), since)
+
+
+def test_command_rejects_non_integer_settings():
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(), Settings(max_rows="1; rm -rf /"), None)
+    with pytest.raises(ValueError):
+        build_remote_command(make_server(), Settings(remote_timeout_sec=-1), None, TOKEN)
