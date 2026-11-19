@@ -5,9 +5,14 @@ napi.logformat의 "AWK PARITY CONTRACT"를 POSIX awk 문법만으로 그대로 �
 gawk 전용 기능과 정규식 반복 횟수 {n}은 쓰지 않는다. 반복이 필요한 정규식은
 여기서 문자 클래스를 펼쳐 만든다.
 
-입력: 셸 루프가 파일마다 "\\001F\\t<경로>" 표시 줄을 먼저 내고 파일 내용을 이어 붙인다.
+입력: 셸 루프가 파일마다 "\\n\\001F<MARK>\\t<경로>" 표시 줄을 먼저 내고 파일 내용을
+이어 붙인다. 읽을 수 없는 파일과 압축 해제 실패는 "\\n\\001E<MARK>\\t<코드>\\t<경로>"로 알린다.
+MARK는 스캔마다 다른 취소 토큰이고, 표시 줄은 줄 전체가 맨 앞부터 일치할 때만 인정한다
+(로그 내용으로 표시 줄을 위조할 수 없다). 표시 앞의 "\\n"은 마지막 줄에 개행이 없는 파일과
+표시가 붙지 않게 하려는 것이다. 그래서 표시 바로 앞의 빈 줄 하나는 세지 않는다.
 출력: Global Constraints의 "원격 출력 프로토콜" 줄만 낸다. 입력 줄은 절대 그대로 내지 않는다.
-변수: SINCE (YYYYMMDD 또는 0), MAXROWS, TOP404 (awk -v로 받는다).
+변수: SINCE (YYYYMMDD 또는 0), MAXROWS, MAXKEYS, TOP404, MARK (awk -v로 받는다).
+집계 키는 MAXKEYS개까지만 만든다. 넘치면 새 키는 버리고 T로 잘렸음을 알린다.
 """
 from __future__ import annotations
 
@@ -29,8 +34,17 @@ BEGIN {
   USE_SINCE = (SINCE + 0 != 0)
   SINCE_S = SINCE ""
   MAXROWS += 0
+  MAXKEYS += 0
   TOP404 += 0
+  if (MARK !~ /^napi-scan-[0-9a-f]+$/) { badmark = 1; exit }
+  FMARK = "\001F" MARK "\t"
+  EMARK = "\001E" MARK "\t"
+  MLEN = length(FMARK)
   nfiles = 0
+  nerr = 0
+  nkeys = 0
+  overflow = 0
+  pend = 0
   cur = 0
 }
 
@@ -90,6 +104,11 @@ function norm(p,    i, n, j, segs, s, out) {
 
 @PARSE@
 
+function clean(p) {
+  gsub(/[\001-\037\177]/, "?", p)
+  return p
+}
+
 function newfile(p) {
   nfiles++
   fpath[nfiles] = p
@@ -101,7 +120,27 @@ function newfile(p) {
   cur = nfiles
 }
 
-function handle(l,    d, np, mp, k, cls) {
+# s = "<코드>\t<경로>". 코드는 셸 루프가 정한 것만 받는다.
+function fileerr(s,    i, code) {
+  i = index(s, "\t")
+  if (i == 0) return
+  code = substr(s, 1, i - 1)
+  if (code != "unreadable" && code != "decompress_failed") return
+  nerr++
+  errs[nerr] = "E\t" code "\t" clean(substr(s, i + 1))
+}
+
+# 표시 줄 앞에서 미뤄 둔 빈 줄을 처리한다. 첫 빈 줄은 셸이 넣은 "\n"이라 세지 않는다.
+function atmarker() {
+  if (pend > 0) pend--
+  flushpend()
+}
+
+function flushpend() {
+  for (; pend > 0; pend--) handle("")
+}
+
+function handle(l,    d, mp, k) {
   if (cur == 0) return
   flines[cur]++
   sub(/\r$/, "", l)
@@ -110,18 +149,14 @@ function handle(l,    d, np, mp, k, cls) {
   if (fmin[cur] == "" || d < fmin[cur]) fmin[cur] = d
   if (d > fmax[cur]) fmax[cur] = d
   if (USE_SINCE && d < SINCE_S) { foor[cur]++; return }
-  np = norm(P_P)
-  mp = P_M SUBSEP np
-  cls = substr(P_S, 1, 1) "xx"
-  k = mp SUBSEP cls
+  mp = P_M SUBSEP norm(P_P)
+  k = mp SUBSEP substr(P_S, 1, 1) "xx"
   if (!(k in cnt)) {
+    if (nkeys >= MAXKEYS) { overflow++; return }
+    nkeys++
     cnt[k] = 0
     kfirst[k] = d
     klast[k] = d
-    kmp[k] = mp
-    km[k] = P_M
-    kp[k] = np
-    kc[k] = cls
   }
   cnt[k]++
   if (d < kfirst[k]) kfirst[k] = d
@@ -130,48 +165,63 @@ function handle(l,    d, np, mp, k, cls) {
 }
 
 {
-  i = index($0, "\001F\t")
-  if (i == 0) { handle($0); next }
-  # 마지막 줄에 개행이 없던 파일이면 표시가 그 줄 뒤에 붙어 온다
-  if (i > 1) handle(substr($0, 1, i - 1))
-  newfile(substr($0, i + 3))
+  if (substr($0, 1, MLEN) == FMARK) {
+    atmarker()
+    newfile(substr($0, MLEN + 1))
+  } else if (substr($0, 1, MLEN) == EMARK) {
+    atmarker()
+    fileerr(substr($0, MLEN + 1))
+    cur = 0
+  } else if ($0 == "") {
+    pend++
+  } else {
+    flushpend()
+    handle($0)
+  }
 }
 
-function aggline(tag, k,    s) {
-  s = tag "\t" km[k] "\t" kp[k]
-  if (tag == "R") s = s "\t" kc[k]
+# 키 = 메서드 SUBSEP 경로 SUBSEP 상태군. 메서드는 [A-Z]+, 상태군은 3글자라서
+# 경로에 SUBSEP 바이트가 있어도 앞뒤로 잘라 내면 정확히 되살아난다.
+function keymp(k) { return substr(k, 1, length(k) - 4) }
+
+function aggline(tag, k,    i, n, s) {
+  i = index(k, SUBSEP)
+  n = length(k)
+  s = tag "\t" substr(k, 1, i - 1) "\t" substr(k, i + 1, n - i - 4)
+  if (tag == "R") s = s "\t" substr(k, n - 2)
   return s "\t" cnt[k] "\t" kfirst[k] "\t" klast[k]
 }
 
 END {
-  if (nfiles == 0) print "E\tno files matched"
+  if (badmark) { print "E\tbad marker"; exit }
+  flushpend()
+  if (nfiles == 0 && nerr == 0) print "E\tno files matched"
+  for (i = 1; i <= nerr; i++) print errs[i]
   for (i = 1; i <= nfiles; i++) {
-    p = fpath[i]
-    gsub(/[\001-\037\177]/, "?", p)
     lo = fmin[i]
     hi = fmax[i]
     if (lo == "") lo = "-"
     if (hi == "") hi = "-"
-    print "F\t" p "\t" lo "\t" hi "\t" flines[i] "\t" fpf[i] "\t" foor[i]
+    print "F\t" clean(fpath[i]) "\t" lo "\t" hi "\t" flines[i] "\t" fpf[i] "\t" foor[i]
   }
 
   nr = 0
-  for (k in cnt) if (kmp[k] in non404) nr++
+  for (k in cnt) if (keymp(k) in non404) nr++
   if (nr > MAXROWS) {
     fflush()
     cmd = "sort -t '\t' -k5,5nr 2>/dev/null | head -n " MAXROWS
-    for (k in cnt) if (kmp[k] in non404) print aggline("R", k) | cmd
+    for (k in cnt) if (keymp(k) in non404) print aggline("R", k) | cmd
     close(cmd)
-    print "T\t" MAXROWS
   } else {
-    for (k in cnt) if (kmp[k] in non404) print aggline("R", k)
+    for (k in cnt) if (keymp(k) in non404) print aggline("R", k)
   }
+  if (nr > MAXROWS || overflow > 0) print "T\t" MAXROWS
 
   # 404만 받은 키: 상위 TOP404개만 P로, 나머지는 Q 합계로
   n404 = 0
   tot404 = 0
   for (k in cnt) {
-    if (kmp[k] in non404) continue
+    if (keymp(k) in non404) continue
     n404++
     tot404 += cnt[k]
     hist[cnt[k]]++
@@ -181,7 +231,7 @@ END {
   if (keep > 0) {
     fflush()
     cmd = "sort -t '\t' -k4,4nr 2>/dev/null | head -n " TOP404
-    for (k in cnt) if (!(kmp[k] in non404)) print aggline("P", k) | cmd
+    for (k in cnt) if (!(keymp(k) in non404)) print aggline("P", k) | cmd
     close(cmd)
   }
   # P에 들어간 keep개의 count 합 = count 큰 순서로 keep개의 합 (hist로 계산)

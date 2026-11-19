@@ -20,7 +20,7 @@ def make_server(**kw):
 def shell_portions(server, settings, since):
     """(원격 명령의 바깥 셸 부분, sh -c 본문의 셸 부분). awk 프로그램은 자리표시자로 바꾼다."""
     prog_q = shlex.quote(awk_program(server.log_format, server.custom_format))
-    script = build_pipeline(server, settings, since)
+    script = build_pipeline(server, settings, since, TOKEN)
     assert script.count(prog_q) == 1
     script_q = shlex.quote(script)
     cmd = build_remote_command(server, settings, since, TOKEN)
@@ -33,11 +33,22 @@ def test_split_glob():
     assert split_glob("/access.log") == ("/", "access.log")
 
 
+@pytest.mark.parametrize("log_glob", [
+    "-delete/x", "access.log*", "./access.log", "", "/var/lo*g/x", "/var/lo?/x",
+    "/var/[l]og/x", "/var/log/",
+])
+def test_split_glob_rejects_unsafe(log_glob):
+    with pytest.raises(ValueError):
+        split_glob(log_glob)
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(log_glob=log_glob), Settings(), None, TOKEN)
+
+
 def test_command_quotes_values():
     server = make_server(log_glob="/x/it's/a*.log")
     cmd = build_remote_command(server, Settings(), None, TOKEN)
     assert "'\"'\"'" in cmd
-    script = build_pipeline(server, Settings(), None)
+    script = build_pipeline(server, Settings(), None, TOKEN)
     # 바깥 셸이 풀면 sh -c 본문이 그대로 한 인자로 넘어간다
     assert script in shlex.split(cmd)
     # 본문 안에서 find는 디렉터리와 패턴을 각각 한 인자로 받는다
@@ -48,7 +59,7 @@ def test_command_quotes_values():
 
 def test_command_quotes_shell_metacharacters():
     server = make_server(log_glob="/x/$(id)`id`;rm -rf ~/a b*.log")
-    script = build_pipeline(server, Settings(), None)
+    script = build_pipeline(server, Settings(), None, TOKEN)
     words = shlex.split(script)
     assert words[1] == "/x/$(id)`id`;rm -rf ~"
     assert words[words.index("-name") + 1] == "a b*.log"
@@ -63,6 +74,18 @@ def test_command_contains_safety_wrappers():
     assert "-v SINCE=20260522" in cmd
     assert "-v MAXROWS=50000" in cmd
     assert "-v TOP404=200" in cmd
+    assert "-v MAXKEYS=200000" in cmd
+    assert '-v MARK="$0"' in cmd
+
+
+def test_pipeline_markers_carry_token_from_dollar_zero():
+    """파일 표시와 오류 표시는 토큰("$0")을 담고, awk도 같은 "$0"을 MARK로 받는다."""
+    script = build_pipeline(make_server(), Settings(), None, TOKEN)
+    assert TOKEN not in script  # 토큰은 실행할 때 $0으로만 들어온다
+    assert r"""printf '\n\001F%s\t%s\n' "$0" "$f";""" in script
+    assert r"""if [ ! -r "$f" ]; then printf '\n\001E%s\tunreadable\t%s\n' "$0" "$f"; continue; fi;""" in script
+    assert r"""gzip -dcf -- "$f" 2>/dev/null || printf '\n\001E%s\tdecompress_failed\t%s\n' "$0" "$f";""" in script
+    assert script.count('-v MARK="$0"') == 1
 
 
 def test_command_shape_passes_token_as_dollar_zero():
@@ -70,7 +93,7 @@ def test_command_shape_passes_token_as_dollar_zero():
     settings = Settings(remote_timeout_sec=120)
     server = make_server()
     cmd = build_remote_command(server, settings, None, TOKEN)
-    script = build_pipeline(server, settings, None)
+    script = build_pipeline(server, settings, None, TOKEN)
     assert cmd == (
         "timeout 120 nice -n 19 "
         "$(command -v ionice >/dev/null 2>/dev/null && echo ionice -c3) "
@@ -144,16 +167,18 @@ def test_awk_program_rejects_unknown_format():
 def test_command_rejects_bad_token(token):
     with pytest.raises(ValueError):
         build_remote_command(make_server(), Settings(), None, token)
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(), Settings(), None, token)
 
 
 @pytest.mark.parametrize("since", ["2026-05-22", "2026052", "20260522;", ""])
 def test_command_rejects_bad_since(since):
     with pytest.raises(ValueError):
-        build_pipeline(make_server(), Settings(), since)
+        build_pipeline(make_server(), Settings(), since, TOKEN)
 
 
 def test_command_rejects_non_integer_settings():
     with pytest.raises(ValueError):
-        build_pipeline(make_server(), Settings(max_rows="1; rm -rf /"), None)
+        build_pipeline(make_server(), Settings(max_rows="1; rm -rf /"), None, TOKEN)
     with pytest.raises(ValueError):
         build_remote_command(make_server(), Settings(remote_timeout_sec=-1), None, TOKEN)

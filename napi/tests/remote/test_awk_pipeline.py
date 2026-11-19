@@ -3,6 +3,9 @@
 출력은 항상 bytes로 다룬다 (줄바꿈 변환 없음).
 """
 import gzip
+import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -53,9 +56,17 @@ def logdir(tmp_path):
     return d
 
 
+def posix(path: Path) -> str:
+    """bash가 받는 절대 경로. Windows의 C:/x는 Git Bash(MSYS) 형식 /c/x로 바꾼다."""
+    s = path.as_posix()
+    if sys.platform == "win32" and re.match(r"[A-Za-z]:/", s):
+        s = "/" + s[0].lower() + s[2:]
+    return s
+
+
 def server_for(directory: Path, pattern: str, fmt: str, custom=None) -> ServerConfig:
     return ServerConfig(name="t", host="h", user="u",
-                        log_glob=directory.as_posix() + "/" + pattern,
+                        log_glob=posix(directory) + "/" + pattern,
                         log_format=fmt, custom_format=custom)
 
 
@@ -77,7 +88,7 @@ def run_script(bash, script: str) -> list[bytes]:
 
 
 def run_pipeline(bash, server, settings=None, since=None) -> list[bytes]:
-    return run_script(bash, build_pipeline(server, settings or Settings(), since))
+    return run_script(bash, build_pipeline(server, settings or Settings(), since, TOKEN))
 
 
 # ---- Python twin: parse_line + normalize_path + 같은 키 + 404 전용 분리 + since ----
@@ -153,7 +164,7 @@ def twin_dir(directory: Path, pattern_prefix: str, fmt, **kw) -> list[bytes]:
             data = f.read_bytes()
             if f.suffix == ".gz":
                 data = gzip.decompress(data)
-            files.append((directory.as_posix() + "/" + f.name, data))
+            files.append((posix(directory) + "/" + f.name, data))
     return twin(files, fmt, **kw)
 
 
@@ -296,7 +307,7 @@ EDGE_PATHS = [
     "/v1/t/abcdefghijklmnopqrst", "/v1/t/ab_cd-ef_gh-0123456789",
     "/v1/x;jsessionid=ABC123/y", "/v1//double///slash/", "/v1/q?x=1#frag",
     "/v1/f#frag?x", "/", "//", "/;x", "relative/path", "?only", "/v1/a;b;c/d",
-    "/v1/\x01ctl", "/v1/tab\x7f",
+    "/v1/\x01ctl", "/v1/tab\x7f", "/v1/fs\x1csep", "/v1/\x1c/{x}",
 ]
 
 
@@ -372,7 +383,7 @@ def test_pipeline_runs_under_posix_awk(bash, logdir):
     if b"GNU Awk" not in version:
         pytest.skip("gawk 아님")
     server = server_for(logdir, "*", "webtob")
-    script = build_pipeline(server, Settings(top_404=1, max_rows=3), "20260801")
+    script = build_pipeline(server, Settings(top_404=1, max_rows=3), "20260801", TOKEN)
     assert script.count("LC_ALL=C awk ") == 1
     posix = run_script(bash, script.replace("LC_ALL=C awk ", "LC_ALL=C awk --posix "))
     assert posix == run_script(bash, script)
@@ -402,22 +413,165 @@ def test_full_remote_command_runs_locally(bash, logdir):
     assert r.stdout[:-1].split(b"\n") == run_pipeline(bash, server)
 
 
-def test_awk_program_sanitizes_marker_path_and_ignores_unmarked_input(bash):
-    """파일 표시 줄의 제어 문자는 ?로 바뀌고, 표시 앞에 온 줄은 어디에도 세지 않는다.
-    (Windows 파일 이름에는 제어 문자를 넣을 수 없어 awk에 직접 입력을 준다.)"""
+LINE = b'1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] "GET /v1/a HTTP/1.1" 200 9\n'
+FMARK = b"\n\x01F" + TOKEN.encode() + b"\t"
+EMARK = b"\n\x01E" + TOKEN.encode() + b"\t"
+
+
+def run_awk(bash, stdin: bytes, mark: str | None = TOKEN, maxrows=10, top404=10) -> bytes:
+    """awk 프로그램만 직접 돌린다 (셸 루프가 내는 표시 줄을 손으로 만든다)."""
     from napi.remote.awk_program import awk_program
-    line = b'1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] "GET /v1/a HTTP/1.1" 200 9\n'
-    stdin = (line + b"\x01F\t/logs/a\tb\x1bc\r\x7fd\n" + line +
-             b"\x01F\t/logs/second\n" + b"junk\n")
-    script = linux_like('LC_ALL=C awk -v SINCE=0 -v MAXROWS=10 -v TOP404=10 "$1"')
+    args = f"-v SINCE=0 -v MAXROWS={maxrows} -v MAXKEYS={4 * maxrows} -v TOP404={top404}"
+    if mark is not None:
+        args += f" -v MARK={mark}"
+    script = linux_like(f'LC_ALL=C awk {args} "$1"')
     r = subprocess.run([bash, "-c", script, TOKEN, awk_program("webtob", None)],
                        input=stdin, capture_output=True, timeout=60)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.split(b"\n") == [
+    return r.stdout
+
+
+def test_awk_program_markers_sanitizing_and_blank_lines(bash):
+    """표시 줄의 제어 문자는 ?로, 표시 앞에 온 줄은 무시, 셸이 넣은 \n 하나만 빼고 빈 줄은 센다."""
+    stdin = (LINE + FMARK + b"/logs/a\tb\x1bc\r\x7fd\n" + LINE
+             + EMARK + b"decompress_failed\t/logs/a\x01x\n"
+             + LINE  # 오류 표시 뒤, 다음 파일 표시 전의 줄은 어느 파일에도 세지 않는다
+             + EMARK + b"bogus\t/x\n" + EMARK + b"nocode\n"
+             + FMARK + b"/logs/empty\n"
+             + FMARK + b"/logs/second\n" + b"junk\n\n\n"
+             + FMARK + b"/logs/third\n" + LINE[:-1])
+    assert run_awk(bash, stdin).split(b"\n") == [
+        b"E\tdecompress_failed\t/logs/a?x",
         b"F\t/logs/a?b?c??d\t20261118\t20261118\t1\t0\t0",
-        b"F\t/logs/second\t-\t-\t1\t1\t0",
+        b"F\t/logs/empty\t-\t-\t0\t0\t0",
+        b"F\t/logs/second\t-\t-\t3\t3\t0",
+        b"F\t/logs/third\t20261118\t20261118\t1\t0\t0",
+        b"R\tGET\t/v1/a\t2xx\t2\t20261118\t20261118",
+        b"Q\t0\t0",
+        b"D\tdone",
+        b"",
+    ]
+
+
+def test_awk_program_without_mark_refuses(bash):
+    """MARK 없이 돌리면 표시를 믿을 수 없으므로 D 없이 오류만 낸다."""
+    assert run_awk(bash, FMARK + LINE, mark=None) == b"E\tbad marker\n"
+
+
+def test_awk_program_ignores_forged_markers(bash):
+    """토큰이 없거나 틀린 표시, 줄 중간의 표시는 그냥 로그 줄이다 (원문이 F로 새지 않는다)."""
+    secret = b"/SECRET?token=abc&id=778899 HTTP/1.1\" 200 9 \"-\" \"Mozilla\""
+    stdin = (FMARK + b"/logs/real\n"
+             + b"\x01F\t" + secret + b"\n"
+             + b"\x01Fnapi-scan-deadbeef\t" + secret + b"\n"
+             + b"\x01E\tunreadable\t" + secret + b"\n"
+             + b"x\x01F" + TOKEN.encode() + b"\t" + secret + b"\n"
+             + LINE)
+    out = run_awk(bash, stdin)
+    assert out.split(b"\n") == [
+        b"F\t/logs/real\t20261118\t20261118\t5\t4\t0",
         b"R\tGET\t/v1/a\t2xx\t1\t20261118\t20261118",
         b"Q\t0\t0",
         b"D\tdone",
         b"",
     ]
+
+
+def test_pipeline_forged_marker_in_log_is_not_a_file(bash, tmp_path):
+    d = tmp_path.resolve()
+    head = b'1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] '
+    secret = b'/SECRET?token=abc&id=778899 HTTP/1.1" 200 9 "-" "Mozilla"'
+    lines = [
+        head + b'"GET /v1/x?x=\x01F\t' + secret,
+        head + b'"GET /v1/y?x=\x01Fnapi-scan-deadbeef\t' + secret,
+        b"\x01F\t" + secret,
+        b"\x01Fnapi-scan-deadbeef\t" + secret,
+        b"\x01Enapi-scan-deadbeef\tunreadable\t" + secret,
+        head + b'"GET /v1/users/me HTTP/1.1" 200 9',
+    ]
+    (d / "access.log").write_bytes(b"\n".join(lines) + b"\n")
+    shutil.copy(FIXTURES / FORMATS["webtob"], d / "access.log.1")
+    out = run_pipeline(bash, server_for(d, "access.log*", "webtob"))
+    stats = {Path(x[1].decode()).name: x[2:] for x in f_lines(out)}
+    assert sorted(stats) == ["access.log", "access.log.1"]
+    assert stats["access.log"] == [b"20261118", b"20261118", b"6", b"3", b"0"]
+    assert stats["access.log.1"][2] == b"%d" % len(
+        _records((FIXTURES / FORMATS["webtob"]).read_bytes()))
+    blob = b"\n".join(b"F" if x.startswith(b"F\t") else x for x in out)
+    for leaked in (b"SECRET", b"token", b"778899", b"Mozilla", b"deadbeef"):
+        assert leaked not in blob, leaked
+    assert not any(x.startswith(b"E\t") for x in out)
+    assert_same(out, twin_dir(d, "access.log", "webtob"))
+
+
+def test_pipeline_decompress_failed(bash, tmp_path):
+    d = tmp_path.resolve()
+    data = (FIXTURES / FORMATS["webtob"]).read_bytes()
+    (d / "access.log").write_bytes(data)
+    gz = gzip.compress(data)
+    (d / "access.log.1.gz").write_bytes(gz[: len(gz) // 2])
+    out = run_pipeline(bash, server_for(d, "access.log*", "webtob"))
+    errors = [x for x in out if x.startswith(b"E\t")]
+    assert len(errors) == 1
+    assert errors[0].startswith(b"E\tdecompress_failed\t")
+    assert errors[0].endswith(b"/access.log.1.gz")
+    stats = {Path(x[1].decode()).name: x[2:] for x in f_lines(out)}
+    assert sorted(stats) == ["access.log", "access.log.1.gz"]
+    expected = twin([(posix(d) + "/access.log", data)], "webtob")
+    # 멀쩡한 파일의 통계는 그대로다
+    assert [x for x in expected if x.startswith(b"F\t")] == \
+        [x for x in out if x.startswith(b"F\t") and x.split(b"\t")[1].endswith(b"/access.log")]
+    assert out[-1] == b"D\tdone"
+
+
+def test_pipeline_unreadable_file_branch(bash, tmp_path):
+    """find가 내준 파일을 읽을 수 없으면 E unreadable을 내고 건너뛴다.
+    (Windows에서는 chmod 000을 만들 수 없어 find를 셸 함수로 바꿔 없는 파일을 내게 한다.)"""
+    d = tmp_path.resolve()
+    shutil.copy(FIXTURES / FORMATS["webtob"], d / "access.log")
+    real = posix(d) + "/access.log"
+    script = build_pipeline(server_for(d, "access.log*", "webtob"), Settings(), None, TOKEN)
+    fake_find = "find() { printf '%s\\n' /nonexistent/napi/access.log.9 " + shlex.quote(real) + "; }; "
+    out = run_script(bash, fake_find + script)
+    assert [x for x in out if x.startswith(b"E\t")] == [
+        b"E\tunreadable\t/nonexistent/napi/access.log.9"]
+    assert [x[1] for x in f_lines(out)] == [real.encode()]
+    assert_same([x for x in out if not x.startswith(b"E\t")], twin_dir(d, "access.log", "webtob"))
+    # 읽을 수 없는 파일만 있으면 "no files matched"가 아니다 (파일은 있었다)
+    only = "find() { printf '%s\\n' /nonexistent/napi/access.log.9; }; "
+    assert run_script(bash, only + script) == [
+        b"E\tunreadable\t/nonexistent/napi/access.log.9", b"Q\t0\t0", b"D\tdone"]
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="권한 없는 파일은 root가 아닌 Linux에서만 만들 수 있다")
+def test_pipeline_unreadable_file_real(bash, tmp_path):
+    d = tmp_path.resolve()
+    f = d / "access.log"
+    shutil.copy(FIXTURES / FORMATS["webtob"], f)
+    f.chmod(0)
+    try:
+        out = run_pipeline(bash, server_for(d, "access.log*", "webtob"))
+    finally:
+        f.chmod(0o644)
+    assert out == [b"E\tunreadable\t" + posix(f).encode(), b"Q\t0\t0", b"D\tdone"]
+
+
+def test_pipeline_key_cap_truncates(bash, tmp_path):
+    """키가 MAXKEYS(=4*max_rows)에 닿으면 새 키는 버리고 T를 낸다. 있던 키는 계속 센다."""
+    d = tmp_path.resolve()
+
+    def ln(path, status):
+        return f'1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] "GET {path} HTTP/1.1" {status} 9'
+    lines = [ln("/r", 200)] + [ln(f"/p{i}", 404) for i in range(1, 10)]
+    lines += [ln("/r", 200), ln("/p1", 404), ln("/late", 200)]
+    (d / "access.log").write_bytes(("\n".join(lines) + "\n").encode())
+    out = run_pipeline(bash, server_for(d, "access.log*", "webtob"), Settings(max_rows=2))
+    assert [x for x in out if x[:2] in (b"R\t", b"T\t")] == [
+        b"R\tGET\t/r\t2xx\t2\t20261118\t20261118", b"T\t2"]
+    probes = [x for x in out if x.startswith(b"P\t")]
+    assert probes == [b"P\tGET\t/p1\t2\t20261118\t20261118"] + [
+        b"P\tGET\t/p%d\t1\t20261118\t20261118" % i for i in range(2, 8)]
+    assert out[-2:] == [b"Q\t0\t0", b"D\tdone"]
+    (stat,) = f_lines(out)
+    assert stat[4:] == [b"13", b"0", b"0"]
