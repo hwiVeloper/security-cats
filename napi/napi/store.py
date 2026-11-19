@@ -70,10 +70,7 @@ def load_result(service: str, dir: Path | None = None) -> ServiceResult | None:
 
 
 def refresh_notes(r: ServiceResult, notes: dict[str, Note]) -> ServiceResult:
-    apis = []
-    for a in r.apis:
-        key = f"{a.method} {a.path}"
-        apis.append(replace(a, note=notes[key]) if key in notes else a)
+    apis = [replace(a, note=notes.get(f"{a.method} {a.path}")) for a in r.apis]
     sleepers = [a for a in apis if a.status in (Status.ASLEEP, Status.RIP)]
     sleeping = sum(1 for a in sleepers if a.note is None)
     total = sum(1 for a in apis if a.in_spec)

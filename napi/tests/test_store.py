@@ -70,7 +70,7 @@ def test_safe_name():
 def test_refresh_notes():
     r = make_result()
     n = Note("정기 점검용", "김", "2026-11-19")
-    new = refresh_notes(r, {"GET /v1/b": n, "GET /ghost": n})
+    new = refresh_notes(r, {"GET /v1/a": r.apis[0].note, "GET /v1/b": n, "GET /ghost": n})
     assert new is not r
     assert r.apis[1].note is None and r.sleeping == 2  # 입력은 그대로
     assert new.apis[1].note == n and new.apis[3].note == n
@@ -78,3 +78,17 @@ def test_refresh_notes():
     assert new.apis[0].note == r.apis[0].note
     assert new.summary != r.summary
     assert new.summary.startswith("API 3개 중 1개가")
+
+
+def test_refresh_notes_removal_clears_note():
+    r = make_result()
+    n = Note("정기 점검용", "김", "2026-11-19")
+    noted = refresh_notes(r, {"GET /v1/a": r.apis[0].note, "GET /v1/b": n})
+    assert noted.sleeping == 1 and noted.sleeping_noted == 1
+    cleared = refresh_notes(noted, {"GET /v1/a": r.apis[0].note})
+    assert cleared.apis[1].note is None
+    assert cleared.apis[0].note == r.apis[0].note
+    assert cleared.sleeping == 2 and cleared.sleeping_noted == 0
+    assert cleared.summary == r.summary
+    assert noted.apis[1].note == n  # 입력은 그대로
+
