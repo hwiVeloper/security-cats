@@ -74,9 +74,24 @@
     f.cur = nn;
   }
 
-  // 저장 직전: 편집 중에 겹쳐서 미뤄 둔 이름 바꾸기를 마저 반영한다.
+  // 저장 직전: 편집 중에 겹쳐서 미뤄 둔 이름 바꾸기를 한꺼번에 반영한다.
+  // 이름을 서로 맞바꾼 경우(A↔B, A→B→C→A)는 하나씩 바꾸면 계속 겹치므로, 모든 이름이 올바를 때
+  // {cur → 새 이름} 표를 만들어 서버의 log_format을 한 번에 옮긴다. 이름이 틀렸으면 아무것도 바꾸지 않는다
+  // (validate가 오류를 보이고 저장을 막는다). → 반영했으면 true.
   function settle(entries, eachServer) {
-    entries.forEach(function (f) { rename(entries, f, f.name, eachServer); });
+    var seen = Object.create(null);
+    for (var i = 0; i < entries.length; i++) {
+      var n = trim(entries[i].name);
+      if (!n || isReserved(n) || seen[n]) return false;
+      seen[n] = true;
+    }
+    var map = Object.create(null);
+    entries.forEach(function (f) { if (f.cur && !isReserved(f.cur)) map[f.cur] = trim(f.name); });
+    eachServer(function (sv) {
+      if (Object.prototype.hasOwnProperty.call(map, sv.log_format)) sv.log_format = map[sv.log_format];
+    });
+    entries.forEach(function (f) { f.cur = trim(f.name); });
+    return true;
   }
 
   // 이 형식을 쓰는 서버의 표시 이름 목록. services: [{name, servers: [...]}]
