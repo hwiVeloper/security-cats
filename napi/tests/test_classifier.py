@@ -179,3 +179,12 @@ def test_reliability_glob_empty():
                          "WAS-01의 경로 /y/c*.log에서 파일을 찾지 못했어요"]
     # glob_empty는 "읽지 못한 로그 파일"이 아니다
     assert "WAS-01에서 읽지 못한 로그 파일이 있어요" not in r.reasons
+
+
+@pytest.mark.parametrize("oldest", ["20261131", "00001118", "20260230"])
+def test_reliability_invalid_oldest_date_does_not_raise(oldest):
+    s = server("A", files=[FileStat("/l", oldest, "20261118", 10, 0, 0)])
+    r = run([op()], {"GET /a": stats()}, [s, server("B", "20250101")], window="all")[1]
+    assert r.level == "low"
+    assert r.reasons == [f"A의 로그 날짜 {oldest}를 읽을 수 없어요 — 로그 형식 설정을 확인해 주세요"]
+    assert r.coverage_days > 300  # 읽을 수 없는 서버는 기간 계산에서 뺀다

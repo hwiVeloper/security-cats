@@ -25,6 +25,14 @@ def _parse(s: str) -> date:
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
 
 
+def _try_parse(s: str) -> date | None:
+    """로그에서 온 YYYYMMDD. 달력에 없는 날짜(11월 31일, 0년 등)면 None (I2)."""
+    try:
+        return _parse(s)
+    except ValueError:
+        return None
+
+
 def window_bounds(window: str, today: date) -> tuple[str | None, str]:
     until = _ymd(today)
     if window == "all":
@@ -74,10 +82,16 @@ def _reliability(
             reasons.append(parse_reason or f"{s.server}에서 로그 파일을 찾지 못했어요")
         else:
             start = oldest if since is None else max(since, oldest)
-            days = (until_d - _parse(start)).days
-            coverages.append(days)
-            if days < cfg.thresholds.min_coverage_days:
-                reasons.append(f"{s.server}은 로그가 {days}일치뿐이에요")
+            start_d = _try_parse(start)
+            if start_d is None:
+                # 범위 검사를 지나도 달력에 없는 날짜일 수 있다. 기간 계산에서 이 서버를 뺀다.
+                reasons.append(f"{s.server}의 로그 날짜 {start}를 읽을 수 없어요"
+                               " — 로그 형식 설정을 확인해 주세요")
+            else:
+                days = (until_d - start_d).days
+                coverages.append(days)
+                if days < cfg.thresholds.min_coverage_days:
+                    reasons.append(f"{s.server}은 로그가 {days}일치뿐이에요")
             if parse_reason:
                 reasons.append(parse_reason)
             newest = s.newest_date

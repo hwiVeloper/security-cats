@@ -863,6 +863,60 @@ def test_pipeline_parity_U_first_token(bash, tmp_path, pattern, lines):
         assert secret not in blob, secret
 
 
+# ---- 최종 리뷰 I2: 월 01-12, 일 01-31 밖의 날짜는 그 줄만 실패 (두 twin 모두) ----
+
+DATE_RANGE_FORMATS = [
+    ("webtob", [
+        f'1.1.1.1 - - [{d}/Nov/2026:10:00:00 +0900] "GET /v1/d{d} HTTP/1.1" 200 1'
+        for d in ("00", "01", "31", "32", "99")]),
+    ('%{%Y-%m-%d}t "%r" %s', [
+        f'{ymd} "GET /v1/x HTTP/1.1" 200'
+        for ymd in ("2026-00-18", "2026-01-18", "2026-12-18", "2026-13-18", "2026-99-18",
+                    "2026-11-00", "2026-11-01", "2026-11-31", "2026-11-32", "2026-11-99")]),
+    ('%{%d/%b/%Y}t "%r" %s', [
+        f'{d}/Dec/2026 "GET /v1/y HTTP/1.1" 200' for d in ("00", "01", "31", "32")]),
+]
+
+
+@pytest.mark.parametrize("pattern,lines", DATE_RANGE_FORMATS)
+def test_pipeline_parity_date_range(bash, tmp_path, pattern, lines):
+    d = tmp_path.resolve()
+    fmts = [] if pattern == "webtob" else [LogFormatDef("dr", pattern)]
+    name = "webtob" if pattern == "webtob" else "dr"
+    files = write_log(d, "app.log", ("\n".join(lines) + "\n").encode("utf-8"))
+    out = parity(bash, server_for(d, "app.log", name), files, name, fmts)
+    (stat,) = f_lines(out)
+    assert 0 < int(stat[5]) < len(lines)
+    for row in (x.split(b"\t") for x in out if x.startswith(b"R\t")):
+        mm, dd = int(row[5][4:6]), int(row[5][6:])
+        assert 1 <= mm <= 12 and 1 <= dd <= 31, row
+
+
+@pytest.mark.parametrize("custom,lines", [
+    (CustomFormat(method_field=2, path_field=3, status_field=4, time_field=1,
+                  time_format="iso8601"),
+     ["2026-13-01T10:00:00 GET /v1/a 200", "2026-00-01 GET /v1/a 200",
+      "2026-11-00 GET /v1/a 200", "2026-11-32 GET /v1/a 200", "2026-12-31 GET /v1/b 200",
+      "2026-01-01 GET /v1/c 200"]),
+    (CustomFormat(method_field=4, path_field=5, status_field=6, time_field=2,
+                  time_format="clf"),
+     ["1.1.1.1 [00/Nov/2026:10:00:01 +0900] GET /v1/a 200",
+      "1.1.1.1 [32/Nov/2026:10:00:01 +0900] GET /v1/a 200",
+      "1.1.1.1 [31/Nov/2026:10:00:01 +0900] GET /v1/b 200",
+      "1.1.1.1 [01/Nov/2026:10:00:01 +0900] GET /v1/c 200"]),
+])
+def test_pipeline_parity_custom_date_range(bash, tmp_path, custom, lines):
+    d = tmp_path.resolve()
+    (d / "app.log").write_bytes(("\n".join(lines) + "\n").encode())
+    server = server_for(d, "app.log", "custom", custom)
+    out = run_pipeline(bash, server)
+    assert_same(out, twin_dir(d, "app.log", "custom", custom=custom))
+    if is_gawk(bash):
+        assert run_pipeline_posix(bash, server) == out
+    (stat,) = f_lines(out)
+    assert int(stat[5]) == len(lines) - 2
+
+
 # ---- Task 3: 로그 경로 여러 개 ----
 
 def test_pipeline_multiple_globs(bash, tmp_path):

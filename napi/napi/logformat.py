@@ -11,6 +11,7 @@ AWK PARITY CONTRACT (awk가 그대로 따라야 하는 의미, v1)
   napi.remote.awk_program이 같은 FormatSpec에서 토큰마다 펼쳐 생성한다.
 - custom: 줄을 [ \t]+로 나눈 N번째(1부터) 필드를 쓴다. path 필드의 양끝 따옴표는 제거,
   제거 후 빈 문자열이면 실패. iso8601은 필드가 yyyy-mm-dd로 시작해야 한다.
+  날짜의 월은 01..12, 일은 01..31이어야 한다 (clf, iso8601 모두. 아니면 실패).
 - 정규화: ?/# 이후 제거 -> "/"로 나눠 각 조각의 ";" 이후 제거 -> 빈 조각 버림
   (연속 "/", 끝 "/", ";"만 남은 조각 포함) -> 각 조각을 규칙 순서대로 검사
   (숫자, UUID, 16자 이상 hex, 숫자로 시작하는 [0-9-]{6,}, "@" 포함, "%" 포함 + 20바이트 이상,
@@ -43,7 +44,8 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   - 다음 토큰이 없으면 줄 끝까지 (빈 값도 된다).
 - t: 커서 위치 문자가 "["이어야 하고, 커서부터 처음 나오는 "]"까지(포함)가 값이다. "]"가 없으면 실패.
   값의 둘째 글자부터 ^[0-9][0-9]/[A-Za-z][A-Za-z][A-Za-z]/[0-9][0-9][0-9][0-9]로 시작해야 하고
-  월 이름이 v1 월 맵(Jan..Dec, 대소문자 구분)에 있어야 한다. 날짜 = yyyy mm dd.
+  월 이름이 v1 월 맵(Jan..Dec, 대소문자 구분)에 있어야 하고 일(dd)은 01..31이어야 한다.
+  날짜 = yyyy mm dd.
 - tfmt (%{...}t): 구분자를 찾지 않는다. 커서부터 정확히 time_width 바이트가 값이고, 커서를
   time_width 바이트만큼 옮긴다 (다음 토큰은 평소대로 그 위치에서 맞아야 한다). 남은 바이트가
   time_width보다 적으면 실패. time_layout이 비어 있지 않으면
@@ -53,6 +55,7 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   (lit/ws)은 continuation 바이트 위치에서 맞을 수 없으므로 결과가 같다.)
   Y, m, d는 ^[0-9]+$이어야 하고, b는 v1 월 맵에 있어야 한다(→ 두 자리 월). 날짜 = Y m d.
   레이아웃에 같은 날짜 항목이 여러 번 있으면(m과 b도 같은 항목) 모두 검사하고 나중 것이 이긴다.
+  마지막으로 정해진 월은 01..12, 일은 01..31이어야 한다(두 자리 문자열 비교). 아니면 실패.
   레이아웃의 리터럴 글자와 H, M, S, z, y 자리는 비교하지 않는다 (폭에만 들어간다).
   time_layout이 비어 있으면 날짜를 정하지 않는다(폭만 검사).
 - r: 값의 앞뒤 space/tab을 지우고 [ \t]+로 나눈다. 토큰이 2개 이상이고 첫 토큰이 ^[A-Z]+$이어야 한다.
@@ -286,9 +289,14 @@ def _tokens(s: str) -> list[str]:
     return _WS_RE.split(s) if s else []
 
 
+def _valid_month_day(month: str, day: str) -> bool:
+    """두 자리 숫자 월/일이 01-12 / 01-31 안인가 (I2). 문자열 비교라 awk와 같다."""
+    return "01" <= month <= "12" and "01" <= day <= "31"
+
+
 def _clf_date(day: str, mon: str, year: str) -> str | None:
     m = _MONTHS.get(mon)
-    return f"{year}{m}{day}" if m else None
+    return f"{year}{m}{day}" if m and _valid_month_day(m, day) else None
 
 
 def _strip_eol(line: str) -> str:
@@ -330,6 +338,8 @@ def _tfmt_date(raw: bytes, tok: Token) -> str | None:
             parts[key] = part.decode("ascii")
     if not tok.time_layout:
         return ""
+    if not _valid_month_day(parts["m"], parts["d"]):
+        return None
     return parts["Y"] + parts["m"] + parts["d"]
 
 
@@ -470,7 +480,7 @@ def _parse_custom(line: str, custom: CustomFormat | None) -> ParsedLine | None:
         return None
     if custom.time_format == "iso8601":
         m = _ISO_DATE_RE.match(time_s)
-        if not m:
+        if not m or not _valid_month_day(m.group(2), m.group(3)):
             return None
         date = m.group(1) + m.group(2) + m.group(3)
     else:

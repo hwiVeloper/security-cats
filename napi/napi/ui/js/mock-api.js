@@ -304,6 +304,7 @@
   var MONTHS = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
     Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
   var UNREADABLE = "이 형식으로 읽을 수 없는 줄이에요";
+  function okMD(m, d) { return m >= "01" && m <= "12" && d >= "01" && d <= "31"; }
 
   function utf8Len(s) { return new TextEncoder().encode(s).length; }
   function isVariable(seg) {
@@ -413,7 +414,7 @@
         if (line.charAt(pos) !== "[") return null;
         var close = line.indexOf("]", pos);
         var m = close < 0 ? null : /^\[([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(line.slice(pos, close + 1));
-        if (!m || !MONTHS[m[2]]) return null;
+        if (!m || !MONTHS[m[2]] || !okMD(MONTHS[m[2]], m[1])) return null;
         date = m[3] + MONTHS[m[2]] + m[1];
         pos = close + 1;
         continue;
@@ -427,7 +428,10 @@
           if (t.layout[q][0] === "b") { if (!MONTHS[piece]) return null; parts.m = MONTHS[piece]; }
           else { if (!/^[0-9]+$/.test(piece)) return null; parts[t.layout[q][0]] = piece; }
         }
-        if (t.layout.length) date = parts.Y + parts.m + parts.d;
+        if (t.layout.length) {
+          if (!okMD(parts.m, parts.d)) return null;
+          date = parts.Y + parts.m + parts.d;
+        }
         pos += t.width;
         continue;
       }
@@ -473,11 +477,11 @@
     var d;
     if (c.time_format === "iso8601") {
       var iso = /^([0-9]{4})-([0-9]{2})-([0-9]{2})/.exec(tm);
-      if (!iso) return null;
+      if (!iso || !okMD(iso[2], iso[3])) return null;
       d = iso[1] + iso[2] + iso[3];
     } else {
       var clf = /([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(tm);
-      if (!clf || !MONTHS[clf[2]]) return null;
+      if (!clf || !MONTHS[clf[2]] || !okMD(MONTHS[clf[2]], clf[1])) return null;
       d = clf[3] + MONTHS[clf[2]] + clf[1];
     }
     return { method: m, path: p, status: +st, date: d };

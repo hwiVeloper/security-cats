@@ -506,3 +506,52 @@ def test_U_without_token_fails(line):
 def test_trailing_U_without_token_fails():
     spec = compile_format('%t %m %U')
     assert parse_with_spec('[18/Nov/2026:10:00:01 +0900] GET \t ', spec) is None
+
+
+# ---- 최종 리뷰 I2: 범위를 벗어난 월(01-12)/일(01-31)은 그 줄만 실패 ----
+
+@pytest.mark.parametrize("day,ok", [
+    ("00", False), ("01", True), ("31", True), ("32", False), ("99", False)])
+def test_clf_time_day_range(day, ok):
+    line = f'1.1.1.1 - - [{day}/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 200 1'
+    p = parse_line(line, "webtob")
+    assert (p is not None) == ok
+    if ok:
+        assert p.date == "202611" + day
+
+
+@pytest.mark.parametrize("ymd,ok", [
+    ("2026-00-18", False), ("2026-01-18", True), ("2026-12-18", True), ("2026-13-18", False),
+    ("2026-99-18", False), ("2026-11-00", False), ("2026-11-01", True), ("2026-11-31", True),
+    ("2026-11-32", False), ("2026-11-99", False)])
+def test_tfmt_month_day_range(ymd, ok):
+    spec = compile_format('%{%Y-%m-%d}t "%r"')
+    p = parse_with_spec(ymd + ' "GET /a HTTP/1.1"', spec)
+    assert (p is not None) == ok
+    if ok:
+        assert p.date == ymd.replace("-", "")
+
+
+def test_tfmt_day_range_with_month_name():
+    spec = compile_format('%{%d/%b/%Y}t "%r"')
+    assert parse_with_spec('00/Nov/2026 "GET /a b"', spec) is None
+    assert parse_with_spec('32/Nov/2026 "GET /a b"', spec) is None
+    assert parse_with_spec('31/Dec/2026 "GET /a b"', spec).date == "20261231"
+
+
+@pytest.mark.parametrize("time_s,ok", [
+    ("2026-13-01T10:00:00", False), ("2026-00-01", False), ("2026-11-00", False),
+    ("2026-11-32", False), ("2026-12-31T00:00:00", True), ("2026-01-01", True)])
+def test_custom_iso_month_day_range(time_s, ok):
+    c = CustomFormat(method_field=2, path_field=3, status_field=4, time_field=1,
+                     time_format="iso8601")
+    p = parse_line(f"{time_s} GET /a 200", "custom", c)
+    assert (p is not None) == ok
+
+
+@pytest.mark.parametrize("day,ok", [("00", False), ("32", False), ("31", True)])
+def test_custom_clf_day_range(day, ok):
+    c = CustomFormat(method_field=4, path_field=5, status_field=6, time_field=2,
+                     time_format="clf")
+    p = parse_line(f"1.1.1.1 [{day}/Nov/2026:10:00:01 +0900] GET /a 200", "custom", c)
+    assert (p is not None) == ok

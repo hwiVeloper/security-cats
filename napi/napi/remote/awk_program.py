@@ -75,10 +75,15 @@ function month(mon,    mi) {
   return sprintf("%02d", (mi + 2) / 3)
 }
 
+# 두 자리 숫자 월/일이 01-12 / 01-31 안인가 (문자열 비교, Python twin과 같다).
+function okmd(m, d) {
+  return m "" >= "01" && m "" <= "12" && d "" >= "01" && d "" <= "31"
+}
+
 # t는 dd/Mon/yyyy로 시작하는 문자열. 날짜를 P_D에 넣고 성공 여부를 돌려준다.
 function clfdate(t,    m) {
   m = month(substr(t, 4, 3))
-  if (m == "") return 0
+  if (m == "" || !okmd(m, substr(t, 1, 2))) return 0
   P_D = substr(t, 8, 4) m substr(t, 1, 2)
   return 1
 }
@@ -297,7 +302,7 @@ function parse(line,    f, n, p, tm) {
 }
 """
 
-_TIME_ISO = r"""  if (tm !~ /@ISODATE@/) return 0
+_TIME_ISO = r"""  if (tm !~ /@ISODATE@/ || !okmd(substr(tm, 6, 2), substr(tm, 9, 2))) return 0
   P_D = substr(tm, 1, 4) substr(tm, 6, 2) substr(tm, 9, 2)"""
 
 _TIME_CLF = r"""  if (!match(tm, /@CLFTIME@/)) return 0
@@ -382,7 +387,7 @@ def _gen_token(tok: Token, nxt: Token | None) -> list[str]:
             else:
                 code += ["  if (c !~ /^[0-9]+$/) return 0", f"  {_DATE_VARS[key]} = c"]
         if tok.time_layout:
-            code.append("  P_D = ty tm td")
+            code += ["  if (!okmd(tm, td)) return 0", "  P_D = ty tm td"]
         return code + [f"  p += {width}"]
     code = _gen_field_value(tok, nxt)
     if d == "r":
