@@ -18,7 +18,9 @@
   var DONUT_ORDER = ["awake", "drowsy", "asleep", "rip", "sleeptalk", "ghost"];
   var STATUS_ORDER = ["asleep", "rip", "sleeptalk", "ghost", "drowsy", "awake", "probe"];
   var TAB_ORDER = ["all"].concat(STATUS_ORDER);
-  var BUCKETS = [["2xx", "#22a06b"], ["3xx", "#8b8f98"], ["4xx", "#f29a3f"], ["5xx", "#dc2626"]];
+  // "???" = 상태 코드가 없는 형식으로 읽은 호출 (classifier가 상태 미상으로 집계한다)
+  var BUCKETS = [["2xx", "#22a06b"], ["3xx", "#8b8f98"], ["4xx", "#f29a3f"], ["5xx", "#dc2626"], ["???", "#cfc6bc"]];
+  var BUCKET_LABEL = { "???": "상태 미상" };
   var METHOD_CLASS = { GET: "get", POST: "post", PUT: "put", PATCH: "put", DELETE: "del" };
   var COLUMNS = [
     { key: "method", label: "메서드" },
@@ -124,7 +126,7 @@
     byStatus = byStatus || {};
     var keys = Object.keys(byStatus).sort();
     if (!keys.length) return "—";
-    return keys.map(function (k) { return k + " " + fmtNum(byStatus[k]); }).join(" · ");
+    return keys.map(function (k) { return (BUCKET_LABEL[k] || k) + " " + fmtNum(byStatus[k]); }).join(" · ");
   }
 
   function distBar(byStatus) {
