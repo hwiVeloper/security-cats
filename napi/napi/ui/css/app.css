@@ -156,6 +156,31 @@ table{border-collapse:collapse}
 .report-section h2{font-size:17px;margin:18px 20px 0}
 .report-section > p{margin:0 20px;font-size:12px}
 
+.report-servers{padding:6px 22px 14px}
+.report-servers h2{font-size:15px;margin:10px 0 6px}
+.server-table{width:100%;font-size:13px}
+.server-table th{text-align:left;color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);padding:6px}
+.server-table td{border-bottom:1px solid #f6efe7;padding:6px}
+.server-table .num{text-align:right}
+.server-table .empty{text-align:center;color:var(--muted)}
+.server-table .c-err{overflow-wrap:anywhere}
+
+/* ===== 인쇄 (PDF 리포트) ===== */
+@page{size:A4;margin:12mm}
+@media print{
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact;animation:none!important;transition:none!important}
+  html,body{height:auto;background:#fff}
+  .napi-report{max-width:none;margin:0}
+  .toast,.backdrop,.detail,.side,.hero-actions,.tabs,.filter,.btn,.sort .arrow,button.add{display:none!important}
+  .sort{pointer-events:none}
+  .report-servers{break-after:page;page-break-after:always}
+  .report-section{break-before:page;page-break-before:always}
+  .api-table{width:100%}
+  .api-table tr,.server-table tr{break-inside:avoid;page-break-inside:avoid}
+  .api-table thead,.server-table thead{display:table-header-group}
+  .anim .z{opacity:1}
+}
+
 /* ===== 냅냥 animation (시안 v3) ===== */
 .anim .breathe{transform-box:fill-box;transform-origin:50% 100%;animation:breathe 3.2s ease-in-out infinite}
 @keyframes breathe{0%,100%{transform:scale(1,1)}50%{transform:scale(1.012,1.035)}}

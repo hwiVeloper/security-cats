@@ -468,6 +468,39 @@
 
   // ------------------------------------------------------------ report
 
+  function serverRange(s) {
+    if (!s.oldest && !s.newest) return "—";
+    return fmtDate(s.oldest) + " ~ " + fmtDate(s.newest);
+  }
+
+  /* 서버별 수집 결과 표 (이름, 성공/오류, 로그 기간, 걸린 시간). 리포트 표지에 둔다. */
+  function renderServers(result) {
+    var servers = result.servers || [];
+    var rows = servers.map(function (s) {
+      var state = s.ok
+        ? el("td", { class: "c-ok" }, s.truncated ? "성공 (일부 잘림)" : "성공")
+        : el("td", { class: "c-err warn" }, "오류" + (s.error ? ": " + s.error : ""));
+      var secs = Number(s.elapsed_sec);
+      return el("tr", null,
+        el("td", null, s.name),
+        state,
+        el("td", null, serverRange(s)),
+        el("td", { class: "num" }, isFinite(secs) ? secs.toFixed(1) + "초" : "—"));
+    });
+    var rel = result.reliability || {};
+    var reasons = rel.level === "low" ? [] : (rel.reasons || []);
+    return el("section", { class: "report-servers" },
+      el("h2", null, "서버별 수집 결과"),
+      el("table", { class: "server-table" },
+        el("thead", null, el("tr", null,
+          el("th", { scope: "col" }, "서버"), el("th", { scope: "col" }, "상태"),
+          el("th", { scope: "col" }, "로그 기간"), el("th", { scope: "col", class: "num" }, "걸린 시간"))),
+        el("tbody", null, rows.length ? rows
+          : el("tr", null, el("td", { class: "empty", colspan: 4 }, "서버 정보가 없어요")))),
+      reasons.length ? el("ul", { class: "reasons", "aria-label": "참고 사항" },
+        reasons.map(function (t) { return el("li", null, t); })) : null);
+  }
+
   function renderReport(rootEl, result, opts) {
     opts = opts || {};
     var print = !!opts.print;
@@ -477,11 +510,12 @@
     if (print) rootEl.classList.add("print");
 
     rootEl.appendChild(el("header", { class: "report-head" },
-      el("h1", null, "napi 리포트 · " + (result.service || "")),
+      el("h1", null, "napi 리포트 — " + (result.service || "")),
       el("p", { class: "muted" }, "스캔 " + fmtDateTime(result.scanned_at))));
     var hero = el("section", { class: "report-cover" });
     rootEl.appendChild(hero);
     renderSummary(hero, result, { print: print });
+    rootEl.appendChild(renderServers(result));
 
     var apis = result.apis || [];
     var counts = result.counts || {};
