@@ -70,6 +70,8 @@ button,input,select,textarea{font-family:inherit;color:inherit}
 .tabs{display:flex;flex-wrap:wrap;gap:4px;padding:10px 20px 0;border-bottom:1px solid var(--line)}
 .tab{padding:7px 12px;font-size:13px;border-radius:9px 9px 0 0;color:var(--muted);background:none;border:1px solid transparent;border-bottom:0;cursor:pointer}
 .tab:hover{color:var(--ink)}
+.tab{display:inline-flex;align-items:center;gap:4px}
+.ico-face{width:18px;height:18px;flex-shrink:0;vertical-align:middle}
 .tab.on{background:#fff;border:1px solid var(--line);border-bottom-color:#fff;margin-bottom:-1px;color:var(--ink);font-weight:700}
 
 /* ===== table ===== */
@@ -194,6 +196,15 @@ table{border-collapse:collapse}
 .sv-reason{color:var(--talk);font-size:12px;overflow-wrap:anywhere}
 .sv-eta{color:var(--muted);font-size:12px}
 .sv-skipped{color:var(--muted);font-size:12px}
+.scan-prog{margin:8px 0 4px;max-width:520px}
+.prog-row{display:flex;gap:10px;align-items:baseline;font-size:13px}
+.prog-row .prog-text{font-weight:700}
+.prog-row .prog-pct{color:var(--asleep);font-weight:700;font-size:12px}
+.prog-bar{height:8px;border-radius:999px;background:#ebe6f9;overflow:hidden;margin:4px 0}
+.prog-bar i{display:block;height:100%;width:0;background:var(--asleep);border-radius:999px;transition:width .4s ease-out}
+.prog-bar.done i{background:var(--awake)}
+.prog-bar.stopped i{background:var(--rip)}
+.prog-phase{margin:0;font-size:12px;color:var(--muted)}
 
 /* ===== settings ===== */
 .set-path{font-size:12px;color:var(--muted);overflow-wrap:anywhere;margin:0 0 8px}
@@ -262,7 +273,7 @@ table{border-collapse:collapse}
 .report-head h1{font-size:22px;margin:0}
 .report-head p{margin:0;font-size:12px}
 .report-section{padding:4px 0 10px}
-.report-section h2{font-size:17px;margin:18px 20px 0}
+.report-section h2{font-size:17px;margin:18px 20px 0;display:flex;align-items:center;gap:6px}
 .report-section > p{margin:0 20px;font-size:12px}
 
 .report-servers{padding:6px 22px 14px}
@@ -314,7 +325,7 @@ table{border-collapse:collapse}
 @media (prefers-reduced-motion:reduce){
   .anim *{animation:none!important}
   .anim .z{opacity:1}
-  .detail,.backdrop,.toast{transition:none}
+  .detail,.backdrop,.toast,.prog-bar i{transition:none}
 }
 
 @media (max-width:820px){.set-grid{flex-direction:column}.set-list{width:auto}.side{display:none}.donut{display:none}.hero{flex-wrap:wrap}.empty-state svg.napnyang{width:100%}}

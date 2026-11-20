@@ -7,13 +7,13 @@
   "use strict";
 
   var STATUS_META = {
-    awake: { label: "깨어있음", emoji: "🟢", color: "#22a06b", desc: "최근에도 호출되고 있어요" },
-    drowsy: { label: "꾸벅꾸벅", emoji: "🟡", color: "#d9a400", desc: "기간 안에 호출됐지만 요즘은 뜸해요" },
-    asleep: { label: "잠듦", emoji: "😴", color: "#7b6cf6", desc: "분석 기간 동안 한 번도 호출되지 않았어요" },
-    rip: { label: "영면", emoji: "🪦", color: "#8b8f98", desc: "deprecated이고 호출도 없어요. 지워도 될 것 같아요" },
-    sleeptalk: { label: "잠꼬대", emoji: "⚠️", color: "#e8590c", desc: "deprecated인데 아직 호출되고 있어요" },
-    ghost: { label: "유령", emoji: "👻", color: "#0ea5b7", desc: "명세에 없는데 호출되고 있어요" },
-    probe: { label: "외부 탐색 시도", emoji: "🔎", color: "#8a7a6e", desc: "명세에 없는 경로로 404만 났어요. 외부에서 찔러 본 요청으로 보여요" }
+    awake: { label: "깨어있음", color: "#22a06b", desc: "최근에도 호출되고 있어요" },
+    drowsy: { label: "꾸벅꾸벅", color: "#d9a400", desc: "기간 안에 호출됐지만 요즘은 뜸해요" },
+    asleep: { label: "잠듦", color: "#7b6cf6", desc: "분석 기간 동안 한 번도 호출되지 않았어요" },
+    rip: { label: "영면", color: "#8b8f98", desc: "deprecated이고 호출도 없어요. 지워도 될 것 같아요" },
+    sleeptalk: { label: "잠꼬대", color: "#e8590c", desc: "deprecated인데 아직 호출되고 있어요" },
+    ghost: { label: "유령", color: "#0ea5b7", desc: "명세에 없는데 호출되고 있어요" },
+    probe: { label: "외부 탐색 시도", color: "#8a7a6e", desc: "명세에 없는 경로로 404만 났어요. 외부에서 찔러 본 요청으로 보여요" }
   };
   var DONUT_ORDER = ["awake", "drowsy", "asleep", "rip", "sleeptalk", "ghost"];
   var STATUS_ORDER = ["asleep", "rip", "sleeptalk", "ghost", "drowsy", "awake", "probe"];
@@ -295,13 +295,13 @@
     container.setAttribute("role", "tablist");
     TAB_ORDER.forEach(function (key) {
       var n = countOf(counts, key);
-      var label = key === "all" ? "전체 " + fmtNum(n) : STATUS_META[key].emoji + " " + STATUS_META[key].label + " " + fmtNum(n);
+      var label = key === "all" ? "전체 " + fmtNum(n) : STATUS_META[key].label + " " + fmtNum(n);
       var on = key === active;
       container.appendChild(el("button", {
         type: "button", class: "tab" + (on ? " on" : ""), role: "tab", "aria-selected": on ? "true" : "false",
         "data-status": key,
         onclick: function () { if (onChange) onChange(key); }
-      }, label));
+      }, key === "all" ? null : face(key, "ico-face"), label));
     });
   }
 
@@ -383,7 +383,7 @@
 
     container.appendChild(el("div", { class: "detail-status s-" + (STATUS_META[api.status] ? api.status : "asleep") },
       face(api.status, "detail-face"),
-      el("div", null, el("b", null, m.emoji + " " + m.label), el("div", { class: "muted" }, m.desc))));
+      el("div", null, el("b", null, m.label), el("div", { class: "muted" }, m.desc))));
 
     if (api.summary) container.appendChild(el("p", { class: "detail-sum" }, api.summary));
 
@@ -547,7 +547,7 @@
         var m = STATUS_META[key];
         var body = el("div", { class: "main" });
         rootEl.appendChild(el("section", { class: "report-section" },
-          el("h2", null, m.emoji + " " + m.label + " " + fmtNum(n)),
+          el("h2", null, face(key, "ico-face"), m.label + " " + fmtNum(n)),
           el("p", { class: "muted" }, m.desc), body));
         renderTable(body, apis, { status: key, readOnly: true, probeRest: result.probe_rest }, null);
       });

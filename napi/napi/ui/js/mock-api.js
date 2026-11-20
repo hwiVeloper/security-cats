@@ -5,7 +5,8 @@
  *
  * 설정·스캔 (Task 13):
  * - 비밀번호: 라운드페이 API의 WAS-02만 아직 입력되지 않은 상태로 시작한다.
- * - 가짜 스캔: 명세 1.2초 → 서버 수집 (동시에 max_parallel_servers대).
+ * - 가짜 스캔: 명세 1.2초 → 서버 수집 (동시에 max_parallel_servers대). 전체 약 8~10초,
+ *   서버마다 끝나는 때가 달라 진행 막대가 차례로 찬다 (지난 결과의 elapsed_sec도 비슷하게 둬서 "예상 약 NN%"가 보인다).
  *   서버 목록의 2번째 서버는 호스트 키 확인을 묻고 (수락하면 새로 고칠 때까지 다시 묻지 않는다),
  *   3번째 서버는 "인증 실패"로 끝난다.
  *   명세 출처가 "파일"인 서비스는 명세 단계에서 실패한다 (failed 화면 확인용).
@@ -217,9 +218,9 @@
       sleeping_noted: 0,
       reliability: { level: "low", coverage_days: 363, reasons: ["WAS-03은 로그가 85일치뿐이에요"] },
       servers: [
-        { name: "WAS-01", ok: true, error: null, oldest: "20251120", newest: TODAY, elapsed_sec: 412.3, truncated: false, lines: 18240311, parse_fail: 42 },
-        { name: "WAS-02", ok: true, error: null, oldest: "20251121", newest: TODAY, elapsed_sec: 398.9, truncated: false, lines: 17998102, parse_fail: 0 },
-        { name: "WAS-03", ok: true, error: null, oldest: "20260825", newest: TODAY, elapsed_sec: 121.4, truncated: false, lines: 4120577, parse_fail: 0 }
+        { name: "WAS-01", ok: true, error: null, oldest: "20251120", newest: TODAY, elapsed_sec: 8.6, truncated: false, lines: 18240311, parse_fail: 42 },
+        { name: "WAS-02", ok: true, error: null, oldest: "20251121", newest: TODAY, elapsed_sec: 5.4, truncated: false, lines: 17998102, parse_fail: 0 },
+        { name: "WAS-03", ok: true, error: null, oldest: "20260825", newest: TODAY, elapsed_sec: 1.7, truncated: false, lines: 4120577, parse_fail: 0 }
       ],
       probe_rest: { distinct: 214, count: 1032 }
     }
@@ -612,7 +613,8 @@
     activeScan[svc.name] = scan.id;
 
     var queue = svc.servers.map(function (sv, i) {
-      return { sv: sv, role: i === 1 ? "hostkey" : i === 2 ? "authfail" : "ok" };
+      // aggMs: 집계 단계 길이 (서버마다 다르게 해서 끝나는 때가 갈린다)
+      return { sv: sv, role: i === 1 ? "hostkey" : i === 2 ? "authfail" : "ok", aggMs: [6500, 4000, 3000][i % 3] };
     });
     var running = 0;
 
@@ -624,7 +626,7 @@
     }
     function aggregate(job, t0) {
       scan.servers[job.sv.name] = "aggregating";
-      later(scan, 3500, function () { end(job, true, null, t0); });
+      later(scan, job.aggMs, function () { end(job, true, null, t0); });
     }
     function run(job) {
       var t0 = Date.now();

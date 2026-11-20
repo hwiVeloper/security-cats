@@ -115,8 +115,31 @@
 
   // ------------------------------------------------------------ main
 
+  var LOCK_TITLE = "스캔 중이에요";
+
+  function scanRunning(name) {
+    return !!(name && root.NapiScan && root.NapiScan.isRunning && root.NapiScan.isRunning(name));
+  }
+
+  // 스캔 버튼·기간 선택 잠금. 원래 title은 data-title에 두고 풀 때 되돌린다.
+  function setLock(node, on) {
+    node.disabled = on;
+    if (on) node.setAttribute("aria-disabled", "true");
+    else node.removeAttribute("aria-disabled");
+    var orig = node.getAttribute("data-title");
+    if (on) node.setAttribute("title", LOCK_TITLE);
+    else if (orig) node.setAttribute("title", orig);
+    else node.removeAttribute("title");
+  }
+
+  // 화면의 스캔 버튼·기간 선택을 각자 서비스의 스캔 상태에 맞춘다 (scan.js가 시작·끝날 때 부른다).
+  function syncScanLock() {
+    var nodes = $("content").querySelectorAll("[data-scan-lock]");
+    for (var i = 0; i < nodes.length; i++) setLock(nodes[i], scanRunning(nodes[i].getAttribute("data-scan-lock")));
+  }
+
   function windowSelect() {
-    var sel = el("select", { class: "sel", "aria-label": "분석 기간", title: "분석 기간",
+    var sel = el("select", { class: "sel", "aria-label": "분석 기간", title: "분석 기간", "data-title": "분석 기간", "data-scan-lock": state.current,
       onchange: function (e) { state.window = e.target.value; state.windowTouched = true; } });
     WINDOWS.forEach(function (w) {
       var o = el("option", { value: w[0] }, w[1]);
@@ -128,9 +151,13 @@
 
   function actionButtons(withExport) {
     var name = state.current;
+    var sel = windowSelect();
+    var scan = el("button", { type: "button", class: "btn pri", "data-scan-lock": name,
+      onclick: function () { if (!scanRunning(name)) NapiApp.onScan(name, state.window); } }, "▶ 스캔");
+    if (scanRunning(name)) { setLock(sel, true); setLock(scan, true); }
     return el("div", { class: "btns" },
-      windowSelect(),
-      el("button", { type: "button", class: "btn pri", onclick: function () { NapiApp.onScan(name, state.window); } }, "▶ 스캔"),
+      sel,
+      scan,
       withExport ? el("button", { type: "button", class: "btn", onclick: function () { NapiApp.onExport(name, "html"); } }, "HTML") : null,
       withExport ? el("button", { type: "button", class: "btn", onclick: function () { NapiApp.onExport(name, "pdf"); } }, "PDF") : null);
   }
@@ -368,6 +395,7 @@
     selectService: selectService,
     openModal: openModal,
     hasModal: function () { return modals.length > 0; },
+    syncScanLock: syncScanLock,
     onScan: function (service, window) { return root.NapiScan.run(service, window); },
     onExport: function (service, kind) {
       return api.export(service, kind).then(function (res) {

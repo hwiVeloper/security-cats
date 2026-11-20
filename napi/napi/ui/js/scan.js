@@ -23,6 +23,7 @@
 
   var current = null; // 패널에 보이는 스캔 (끝난 뒤에도 닫을 때까지 남는다)
   var starting = false; // 비밀번호 입력 ~ start_scan 사이
+  var startingService = null; // starting 동안 스캔 버튼을 잠글 서비스
   var formSeq = 0;
 
   function api() { return root.pywebview.api; }
@@ -45,6 +46,22 @@
     return null;
   }
 
+  // 이 서비스의 스캔이 시작 준비 중이거나 진행 중이면 true (스캔 버튼·기간 선택을 잠근다).
+  function isRunning(service) {
+    if (starting && startingService === service) return true;
+    return !!(current && !current.finished && current.service === service);
+  }
+
+  function syncLock() {
+    var a = app();
+    if (a && a.syncScanLock) a.syncScanLock();
+  }
+
+  function elapsedText(ms) {
+    var sec = Math.max(0, Math.floor(ms / 1000));
+    return "경과 " + Math.floor(sec / 60) + "분 " + (sec % 60) + "초";
+  }
+
   function minutesText(sec) {
     var n = Number(sec);
     if (!isFinite(n) || n <= 0) return null;
@@ -60,6 +77,8 @@
       return Promise.resolve();
     }
     starting = true;
+    startingService = service;
+    syncLock();
     return api().missing_secrets(service).then(function (missing) {
       if (isErr(missing)) { toast(missing.error); return false; }
       if (!missing || !missing.length) return true;
@@ -70,7 +89,11 @@
       if (go) return begin(service, window);
     }).catch(function () {
       toast("스캔을 시작하지 못했어요");
-    }).then(function () { starting = false; });
+    }).then(function () {
+      starting = false;
+      startingService = null;
+      syncLock();
+    });
   }
 
   function begin(service, window) {
@@ -80,7 +103,8 @@
       var s = {
         id: res.scan_id, service: service, window: window, phase: "spec", servers: {},
         prev: {}, reasons: {}, skipped: {}, error: null, finished: false, cancelling: false,
-        answered: {}, prompt: null, timer: null, pollErrors: 0, sig: null, catMode: null
+        answered: {}, prompt: null, timer: null, pollErrors: 0, sig: null, catMode: null,
+        startedAt: Date.now(), endedAt: null
       };
       current = s;
       showPanel(s);
@@ -302,7 +326,9 @@
   function finish(s, phase, error) {
     s.finished = true;
     s.phase = phase;
+    s.endedAt = Date.now();
     clearTimeout(s.timer);
+    syncLock();
     syncPrompt(s, null);
     if (phase === "failed") s.error = error || "스캔하지 못했어요";
     renderPanel(s);
@@ -335,6 +361,7 @@
     clear(panel);
     s.catBox = el("div", { class: "scan-cat" });
     s.status = el("p", { class: "scan-status", role: "status" });
+    s.prog = buildProgress();
     s.body = el("div");
     panel.appendChild(s.catBox);
     panel.appendChild(el("div", { class: "scan-body" }, s.status, s.body));
@@ -360,8 +387,61 @@
     return "서버에서 로그를 집계하고 있어요 (원본 로그는 가져오지 않아요)";
   }
 
+  // 진행 막대·경과 시간은 고정 노드를 제자리에서 고친다 (매 폴링마다 패널 전체를 다시 그리면 취소 버튼 포커스가 사라진다).
+  function buildProgress() {
+    var p = { text: el("span", { class: "prog-text" }), pct: el("span", { class: "prog-pct" }), fill: el("i"), phase: el("p", { class: "prog-phase" }) };
+    p.bar = el("div", { class: "prog-bar", role: "progressbar", "aria-label": "스캔 진행", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, p.fill);
+    p.box = el("div", { class: "scan-prog" }, el("div", { class: "prog-row" }, p.text, p.pct), p.bar, p.phase);
+    return p;
+  }
+
+  function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+
+  // 지난 결과의 서버별 걸린 시간 중 가장 긴 것 (이번 스캔 서버만). 없으면 0.
+  function prevMax(s, names) {
+    var max = 0;
+    (names.length ? names : Object.keys(s.prev)).forEach(function (n) {
+      var v = Number(s.prev[n]);
+      if (isFinite(v) && v > max) max = v;
+    });
+    return max;
+  }
+
+  function updateProgress(s) {
+    var p = s.prog;
+    var names = Object.keys(s.servers);
+    var total = names.length;
+    var completed = names.filter(function (n) { return TERMINAL[s.servers[n]]; }).length;
+    var elapsedMs = (s.endedAt || Date.now()) - s.startedAt;
+    var expect = prevMax(s, names);
+    var frac = total ? completed / total : 0;
+    var pct = null;
+    if (s.phase === "done") {
+      frac = 1;
+      pct = "100%";
+    } else {
+      // 지난번 가장 오래 걸린 서버 시간 대비 경과 비율과 끝난 서버 비율 중 큰 쪽. 끝나기 전에는 99%를 넘지 않는다.
+      if (!s.finished && expect > 0) frac = Math.max(frac, elapsedMs / 1000 / expect);
+      frac = Math.min(0.99, Math.max(0, frac));
+      if (!s.finished && expect > 0) pct = "예상 약 " + Math.round(frac * 100) + "%";
+    }
+    var now = String(Math.round(frac * 100));
+    var progText = total ? "서버 " + completed + "/" + total + " 완료" : "서버 확인 중";
+    setText(p.text, progText);
+    setText(p.pct, pct || "");
+    p.pct.hidden = !pct;
+    p.fill.style.width = now + "%";
+    if (p.bar.getAttribute("aria-valuenow") !== now) p.bar.setAttribute("aria-valuenow", now);
+    p.bar.setAttribute("aria-valuetext", progText + (pct ? ", " + pct : ""));
+    p.bar.classList.toggle("done", s.phase === "done");
+    p.bar.classList.toggle("stopped", s.finished && s.phase !== "done");
+    var phase = s.finished ? null : s.phase === "spec" ? "명세를 읽는 중" : "서버에서 집계 중";
+    setText(p.phase, (phase ? phase + " · " : "") + elapsedText(elapsedMs));
+  }
+
   function renderPanel(s) {
     if (s !== current || !s.body) return;
+    updateProgress(s);
     var sig = JSON.stringify([s.phase, s.servers, s.prev, s.reasons, s.skipped, s.error, s.cancelling, s.finished]);
     if (sig === s.sig) return;
     s.sig = sig;
@@ -379,6 +459,7 @@
     clear(body);
     body.appendChild(el("h3", null, s.service + (s.finished ? " 스캔" : " 스캔 중")));
     if (s.error) body.appendChild(el("p", { class: "scan-error", role: "alert" }, "⚠ " + s.error));
+    body.appendChild(s.prog.box);
 
     var names = Object.keys(s.servers);
     if (names.length) {
@@ -440,5 +521,5 @@
     run(s.service, s.window);
   }
 
-  root.NapiScan = { run: run };
+  root.NapiScan = { run: run, isRunning: isRunning };
 })(window);
