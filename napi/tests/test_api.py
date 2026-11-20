@@ -160,6 +160,23 @@ def test_get_state_shape(env):
     json.dumps(st)
 
 
+def test_hand_edited_unquoted_note_date_keeps_app_working(env):
+    text = env["path"].read_text(encoding="utf-8")
+    assert "notes: {}" in text
+    env["path"].write_text(text.replace(
+        "notes: {}", 'notes:\n    "GET /v1/b":\n      reason: 연 1회\n      author: 홍\n      date: 2026-11-19',
+        1), encoding="utf-8")
+    api = env["api"]
+    st = api.get_state()
+    assert st["error"] is None
+    assert st["config"]["services"][0]["notes"]["GET /v1/b"]["date"] == "2026-11-19"
+    json.dumps(st)
+    p = wait_phase(api, api.start_scan(SVC, "365")["scan_id"])
+    assert p["phase"] == "done"  # save_result의 json.dump가 date 때문에 죽지 않는다
+    by = {a["path"]: a for a in api.get_result(SVC)["apis"]}
+    assert by["/v1/b"]["note"]["date"] == "2026-11-19"
+
+
 def test_get_state_reports_broken_config(env):
     env["path"].write_text("services: [1, 2", encoding="utf-8")
     st = env["api"].get_state()

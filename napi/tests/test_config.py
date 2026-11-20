@@ -1,4 +1,6 @@
 import dataclasses
+import json
+import os
 
 import pytest
 
@@ -108,3 +110,123 @@ def test_unreadable_path_raises_config_error(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_config(d)
     assert "설정 파일" in str(e.value)
+
+
+# 설계 문서 §5.2의 예시 그대로 (date가 따옴표 없이 쓰여 YAML에서 날짜가 된다)
+SPEC_EXAMPLE_YAML = """version: 1
+services:
+  - name: 라운드페이 API
+    spec:
+      type: openapi          # openapi (OpenAPI 3.x / Swagger 2.0 자동 판별)
+      source: url            # url | file
+      location: https://test-roundpay.example.local/v3/api-docs
+    path_mapping:            # 로그 경로 → 명세 경로로 맞추기 위한 보정
+      strip_prefix: /roundpay
+      add_prefix: ""
+    thresholds:
+      awake_days: 30         # 최근 N일 내 호출 → 깨어있음
+      min_coverage_days: 90  # 로그 기간이 이보다 짧은 서버가 있으면 신뢰도 낮음
+    exclude_paths: [/health, /actuator/**]
+    servers:
+      - name: WAS-01
+        host: 10.0.0.11
+        port: 22
+        user: webtob
+        auth: password       # password | key
+        key_file: null
+        log_glob: /webtob/log/access.log*
+        log_format: webtob   # apache_common | apache_combined | nginx_combined | webtob | custom
+        custom_format: null  # custom일 때 필드 정의 (5.5 참고)
+    notes:
+      "GET /v1/settlements/yearly":
+        reason: 연 1회 정산용 (1월)
+        author: 홍길동
+        date: 2026-11-19
+"""
+
+
+def test_spec_example_yaml_loads_with_unquoted_date(tmp_path):
+    p = tmp_path / "napi-config.yaml"
+    p.write_text(SPEC_EXAMPLE_YAML, encoding="utf-8")
+    cfg = load_config(p)
+    svc = cfg.services[0]
+    assert svc.notes["GET /v1/settlements/yearly"] == Note("연 1회 정산용 (1월)", "홍길동", "2026-11-19")
+    assert svc.servers[0].port == 22 and svc.servers[0].key_file is None
+    assert svc.exclude_paths == ["/health", "/actuator/**"]
+    json.dumps(dataclasses.asdict(cfg), ensure_ascii=False)  # get_state/save_result가 하는 일
+    assert validate_config(cfg) == []
+    save_config(cfg, p)
+    assert load_config(p) == cfg
+
+
+def _write(tmp_path, body):
+    p = tmp_path / "c.yaml"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+BASE = ("services:\n- name: {name}\n  spec: {{location: x}}\n"
+        "  thresholds: {{awake_days: {awake}, min_coverage_days: 90}}\n"
+        "  servers:\n  - {{name: {sv}, host: 10.0.0.1, user: {user}, log_glob: /a/b, port: {port}}}\n"
+        "settings: {{max_rows: {rows}, default_window: {window}}}\n")
+
+
+def test_ints_coerced_and_strings_stay_strings(tmp_path):
+    p = _write(tmp_path, BASE.format(name=2024, awake='"45"', sv=1, user=1000, port='"2222"',
+                                     rows="1000", window=365))
+    cfg = load_config(p)
+    svc, sv = cfg.services[0], cfg.services[0].servers[0]
+    assert (svc.name, sv.name, sv.user, sv.host) == ("2024", "1", "1000", "10.0.0.1")
+    assert (sv.port, svc.thresholds.awake_days, cfg.settings.max_rows) == (2222, 45, 1000)
+    assert cfg.settings.default_window == "365"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("port", "abc"), ("port", "true"), ("port", "22.5"), ("awake", "[1]"), ("rows", "ten"),
+])
+def test_non_integer_raises_korean_config_error(tmp_path, field, value):
+    kw = dict(name="a", awake=30, sv="s", user="u", port=22, rows=50000, window='"365"')
+    kw[field] = value
+    with pytest.raises(ConfigError) as e:
+        load_config(_write(tmp_path, BASE.format(**kw)))
+    assert "정수" in str(e.value)
+
+
+def test_non_mapping_entry_raises_config_error(tmp_path):
+    p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers: []\n"
+                         "  notes: {\"GET /a\": 사유만}\n")
+    with pytest.raises(ConfigError, match="설정 파일 내용이 올바르지 않습니다"):
+        load_config(p)
+
+
+def test_validate_integer_ranges():
+    def errs(mut):
+        cfg = AppConfig(services=[make_service()])
+        mut(cfg)
+        return validate_config(cfg)
+
+    assert errs(lambda c: None) == []
+    assert any("포트" in m for m in errs(lambda c: setattr(c.services[0].servers[0], "port", 0)))
+    assert any("포트" in m for m in errs(lambda c: setattr(c.services[0].servers[0], "port", 70000)))
+    assert any("기준값" in m for m in errs(lambda c: setattr(c.services[0].thresholds, "awake_days", 0)))
+    assert any("기준값" in m
+               for m in errs(lambda c: setattr(c.services[0].thresholds, "min_coverage_days", 0)))
+    for name in ("max_parallel_servers", "remote_timeout_sec", "max_rows"):
+        assert any(name in m for m in errs(lambda c: setattr(c.settings, name, 0))), name
+    assert errs(lambda c: setattr(c.settings, "top_404", 0)) == []
+    assert any("top_404" in m for m in errs(lambda c: setattr(c.settings, "top_404", -1)))
+
+
+def test_save_config_is_atomic(tmp_path, monkeypatch):
+    p = tmp_path / "c.yaml"
+    save_config(AppConfig(services=[make_service()]), p)
+    before = p.read_text(encoding="utf-8")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        save_config(AppConfig(services=[]), p)
+    assert p.read_text(encoding="utf-8") == before
+    assert [f.name for f in tmp_path.iterdir()] == ["c.yaml"]  # 임시 파일이 남지 않는다

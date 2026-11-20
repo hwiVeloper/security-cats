@@ -127,7 +127,7 @@ def _url_resp(monkeypatch, content, text):
 def test_url_body_decoded_as_utf8_not_charset_guess(monkeypatch):
     body = json.dumps({"openapi": "3.0.0", "paths": {"/a": {"get": {"summary": "잔액 조회"}}}},
                       ensure_ascii=False)
-    raw = "﻿".encode("utf-8") + body.encode("utf-8")  # BOM 포함
+    raw = b"\xef\xbb\xbf" + body.encode("utf-8")  # UTF-8 BOM 포함
     # requests가 charset 없는 응답을 ISO-8859-1로 추측한 경우의 resp.text
     _url_resp(monkeypatch, raw, raw.decode("iso-8859-1"))
     ops = load_spec(SpecSource(source="url", location="http://x/spec.json"))

@@ -1,7 +1,11 @@
 """설정 파일(YAML) 로드/저장/검증."""
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 from dataclasses import asdict
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -21,6 +25,50 @@ def _to_dict(cfg: AppConfig) -> dict:
     return asdict(cfg)
 
 
+_INT_RE = re.compile(r"[+-]?[0-9]+")
+
+
+def _int(value, name: str) -> int:
+    """손으로 고친 설정의 정수 칸. 정수와 숫자 문자열("22")만 받는다."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and _INT_RE.fullmatch(value.strip()):
+        return int(value.strip())
+    raise ConfigError(f"설정 파일의 {name} 값은 정수여야 합니다: {value!r}")
+
+
+def _str(value) -> str:
+    """문자열 칸. YAML이 숫자·날짜로 읽은 값(예: date: 2026-11-19)도 문자열로 되돌린다."""
+    if value is None:
+        return ""
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def _fields(d, ints: tuple[str, ...] = (), strs: tuple[str, ...] = (),
+            optional_strs: tuple[str, ...] = ()) -> dict:
+    """dataclass에 넘기기 전에 알려진 칸의 형을 맞춘다. 모르는 키는 그대로 둬서
+    dataclass 생성이 TypeError(→ ConfigError)를 내게 한다."""
+    if d is not None and not isinstance(d, dict):
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: 매핑이 와야 할 자리에 {d!r}")
+    out = dict(d or {})
+    for k in ints:
+        if k in out:
+            out[k] = _int(out[k], k)
+    for k in strs:
+        if k in out:
+            out[k] = _str(out[k])
+    for k in optional_strs:
+        if k in out and out[k] is not None:
+            out[k] = _str(out[k])
+    return out
+
+
+_SERVER_STRS = ("name", "host", "user", "log_glob", "auth", "log_format")
+_SETTINGS_INTS = ("max_parallel_servers", "remote_timeout_sec", "max_rows", "top_404")
+
+
 def _from_dict(d: dict) -> AppConfig:
     if not isinstance(d, dict):
         raise ConfigError("설정 파일 형식이 올바르지 않습니다. (최상위가 매핑이 아님)")
@@ -29,22 +77,26 @@ def _from_dict(d: dict) -> AppConfig:
         for s in d.get("services") or []:
             servers = []
             for sv in s.get("servers") or []:
-                sv = dict(sv)
+                sv = _fields(sv, ints=("port",), strs=_SERVER_STRS, optional_strs=("key_file",))
                 cf = sv.pop("custom_format", None)
                 servers.append(ServerConfig(
                     **sv, **({"custom_format": CustomFormat(**cf)} if cf else {})))
             services.append(ServiceConfig(
-                name=s["name"],
-                spec=SpecSource(**(s.get("spec") or {})),
+                name=_str(s["name"]),
+                spec=SpecSource(**_fields(s.get("spec"), strs=("type", "source", "location"))),
                 servers=servers,
-                path_mapping=PathMapping(**(s.get("path_mapping") or {})),
-                thresholds=Thresholds(**(s.get("thresholds") or {})),
-                exclude_paths=list(s.get("exclude_paths") or []),
-                notes={k: Note(**v) for k, v in (s.get("notes") or {}).items()},
+                path_mapping=PathMapping(**_fields(s.get("path_mapping"),
+                                                   strs=("strip_prefix", "add_prefix"))),
+                thresholds=Thresholds(**_fields(s.get("thresholds"),
+                                                ints=("awake_days", "min_coverage_days"))),
+                exclude_paths=[_str(x) for x in (s.get("exclude_paths") or [])],
+                notes={_str(k): Note(**_fields(v, strs=("reason", "author", "date")))
+                       for k, v in (s.get("notes") or {}).items()},
             ))
         return AppConfig(
             services=services,
-            settings=Settings(**(d.get("settings") or {})),
+            settings=Settings(**_fields(d.get("settings"), ints=_SETTINGS_INTS,
+                                        strs=("default_window",))),
             version=d.get("version", 1),
         )
     except (TypeError, KeyError, AttributeError) as e:
@@ -73,11 +125,32 @@ def save_config(cfg: AppConfig, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(_to_dict(cfg), allow_unicode=True, sort_keys=False)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    # 같은 폴더의 임시 파일에 쓰고 바꿔 끼운다 (쓰다가 실패해도 원래 파일은 그대로).
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _below(value, minimum: int) -> bool:
+    return isinstance(value, bool) or not isinstance(value, int) or value < minimum
+
+
+_SETTINGS_MIN = {"max_parallel_servers": 1, "remote_timeout_sec": 1, "max_rows": 1, "top_404": 0}
 
 
 def validate_config(cfg: AppConfig) -> list[str]:
     errors: list[str] = []
+    for name, minimum in _SETTINGS_MIN.items():
+        if _below(getattr(cfg.settings, name), minimum):
+            errors.append(f"설정 {name}은(는) {minimum} 이상의 정수여야 합니다.")
     seen: set[str] = set()
     for svc in cfg.services:
         label = f"서비스 '{svc.name}'"
@@ -86,10 +159,15 @@ def validate_config(cfg: AppConfig) -> list[str]:
         if svc.name in seen:
             errors.append(f"{label}: 서비스 이름이 중복되었습니다.")
         seen.add(svc.name)
+        for th in ("awake_days", "min_coverage_days"):
+            if _below(getattr(svc.thresholds, th), 1):
+                errors.append(f"{label}: 기준값 {th}은(는) 1 이상의 정수여야 합니다.")
         for sv in svc.servers:
             sl = f"{label} / 서버 '{sv.name}'"
             if not sv.host.strip():
                 errors.append(f"{sl}: 호스트가 비어 있습니다.")
+            if _below(sv.port, 1) or sv.port > 65535:
+                errors.append(f"{sl}: 포트는 1~65535 사이의 정수여야 합니다.")
             if sv.auth == "key" and not sv.key_file:
                 errors.append(f"{sl}: 키 인증인데 키 파일이 지정되지 않았습니다.")
             if sv.log_format == "custom" and sv.custom_format is None:
