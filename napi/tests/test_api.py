@@ -386,6 +386,36 @@ def test_scan_with_failed_server_is_saved(env):
     assert [s["error"] for s in r["servers"]] == [None, "인증 실패", None]
 
 
+def test_scan_without_any_logs_fails_and_keeps_previous_result(env):
+    api, holder = env["api"], env["holder"]
+    first = api.start_scan(SVC, "365")["scan_id"]
+    assert wait_phase(api, first)["phase"] == "done"
+    previous = api.get_result(SVC)
+
+    def no_logs(col, servers_, since, progress, cancel):
+        return [ServerScanResult("WAS-01", False, error="인증 실패"),
+                ServerScanResult("WAS-02", True),
+                ServerScanResult("WAS-03", False, error="접속 실패")]
+
+    holder["behavior"] = no_logs
+    p = wait_phase(api, api.start_scan(SVC, "365")["scan_id"])
+    assert p["phase"] == "failed"
+    assert p["error"] == ("로그를 가져온 서버가 없어 판정하지 않았어요 (WAS-01: 인증 실패, "
+                          "WAS-02: 로그 파일을 찾지 못했어요, WAS-03: 접속 실패)")
+    assert api.get_result(SVC) == previous
+
+
+def test_scan_of_service_without_servers_fails(env):
+    cfg = app_config()
+    cfg.services[0].servers = []
+    save_config(cfg, env["path"])
+    api = env["api"]
+    p = wait_phase(api, api.start_scan(SVC, "365")["scan_id"])
+    assert p["phase"] == "failed"
+    assert p["error"] == "로그를 가져온 서버가 없어 판정하지 않았어요 (등록된 서버가 없어요)"
+    assert api.get_result(SVC) is None
+
+
 def test_cancel_scan_keeps_previous_result(env):
     api, holder = env["api"], env["holder"]
     first = api.start_scan(SVC, "365")["scan_id"]

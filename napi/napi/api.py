@@ -24,7 +24,7 @@ from napi.config import ConfigError, _from_dict, load_config, save_config, valid
 from napi.logformat import test_sample_line
 from napi.models import AppConfig, CustomFormat, Note, ServiceConfig
 from napi.remote.command import build_remote_command
-from napi.scan import run_scan
+from napi.scan import ScanError, run_scan
 from napi.secrets import SessionSecrets
 from napi.spec import SpecError, load_spec
 from napi.store import load_result, refresh_notes, result_to_dict, safe_name, save_result
@@ -301,8 +301,8 @@ class Api:
                         pass
                     save_result(result, self._results_dir)
                 phase = "done"
-        except SpecError as e:
-            error = str(e)
+        except (SpecError, ScanError) as e:
+            error = str(e)  # 저장하지 않으므로 이전 결과가 남는다
         except Exception as e:
             error = f"스캔 중 오류가 발생했어요 ({type(e).__name__})"
         finally:

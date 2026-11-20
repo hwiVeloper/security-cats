@@ -140,6 +140,14 @@ class ServerScanResult:
         dates = [f.max_date for f in self.files if f.max_date is not None]
         return max(dates) if dates else None
 
+    @property
+    def total_lines(self) -> int:
+        return sum(f.lines for f in self.files)
+
+    @property
+    def total_parse_fail(self) -> int:
+        return sum(f.parse_fail for f in self.files)
+
 
 class Status(str, Enum):
     AWAKE = "awake"
@@ -185,6 +193,9 @@ class ServerSummary:
     newest: str | None
     elapsed_sec: float
     truncated: bool
+    # 읽은 로그 줄 수와 그중 형식이 맞지 않아 건너뛴 줄 수 (예전 결과 파일에는 없어서 기본 0)
+    lines: int = 0
+    parse_fail: int = 0
 
 
 @dataclass

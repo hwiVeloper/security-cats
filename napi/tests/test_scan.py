@@ -7,7 +7,7 @@ from napi.models import (
     AggRow, FileStat, ServerConfig, ServerScanResult, ServiceConfig, Settings,
     SpecOperation, SpecSource, Status,
 )
-from napi.scan import run_scan
+from napi.scan import ScanError, run_scan
 from napi.spec import SpecError
 
 TODAY = date(2026, 11, 19)
@@ -81,3 +81,38 @@ def test_cancelled_still_returns_result():
     r = run_scan(cfg(), Settings(), "all", FakeCollector([s]), lambda a, b: None,
                  cancel, today=TODAY, spec_loader=lambda src: ops())
     assert r.since is None and r.servers[0].error == "취소됨"
+
+
+def run_with(servers, c=None):
+    return run_scan(c or cfg(), Settings(), "365", FakeCollector(servers), lambda s, p: None,
+                    threading.Event(), today=TODAY, spec_loader=lambda src: ops())
+
+
+def test_no_server_with_logs_fails_scan():
+    nofiles = ServerScanResult("W1", True, rows=[AggRow("GET", "/v1/a", "2xx", 1, "20261101", "20261101")])
+    bad = ServerScanResult("W2", False, error="인증 실패")
+    with pytest.raises(ScanError) as e:
+        run_with([nofiles, bad])
+    assert str(e.value) == ("로그를 가져온 서버가 없어 판정하지 않았어요 "
+                            "(W1: 로그 파일을 찾지 못했어요, W2: 인증 실패)")
+
+
+def test_zero_servers_fails_scan():
+    c = cfg()
+    c.servers = []
+    with pytest.raises(ScanError) as e:
+        run_with([], c)
+    assert str(e.value) == "로그를 가져온 서버가 없어 판정하지 않았어요 (등록된 서버가 없어요)"
+
+
+def test_one_server_with_logs_is_enough():
+    ok = ServerScanResult("W1", True, files=[FileStat("/l", "20250101", "20261118", 3, 0, 0)])
+    r = run_with([ok, ServerScanResult("W2", False, error="x")])
+    assert r.reliability.level == "low"
+
+
+def test_server_summary_carries_line_counts():
+    ok = ServerScanResult("W1", True, files=[FileStat("/a", "20250101", "20261118", 10, 2, 0),
+                                             FileStat("/b", "20250101", "20261118", 5, 1, 1)])
+    r = run_with([ok, ServerScanResult("W2", False, error="x")])
+    assert [(s.name, s.lines, s.parse_fail) for s in r.servers] == [("W1", 15, 3), ("W2", 0, 0)]

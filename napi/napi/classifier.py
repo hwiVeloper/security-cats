@@ -14,6 +14,7 @@ from napi.models import (
 )
 
 _FILE_ERROR_CODES = {"unreadable", "decompress_failed"}
+_PARSE_FAIL_RATIO = 0.2  # 이 비율 이상 읽지 못하면 로그 형식 설정을 의심한다
 
 
 def _ymd(d: date) -> str:
@@ -55,19 +56,34 @@ def _reliability(
     reasons: list[str] = []
     coverages: list[int] = []
     until_d = _parse(until)
+    stale_before = _ymd(until_d - timedelta(days=cfg.thresholds.awake_days))
+    if not servers:
+        reasons.append("등록된 서버가 없어요")
     for s in servers:
         if not s.ok:
             reasons.append(f"{s.server} 스캔 실패: {s.error}")
             continue
         oldest = s.oldest_date
+        lines, failed = s.total_lines, s.total_parse_fail
+        parse_reason = None
+        if lines > 0 and failed / lines >= _PARSE_FAIL_RATIO:
+            parse_reason = (f"{s.server}은 로그 줄의 {failed * 100 // lines}%를 읽지 못했어요"
+                            " — 로그 형식 설정을 확인해 주세요")
         if not s.files or oldest is None:
-            reasons.append(f"{s.server}에서 로그 파일을 찾지 못했어요")
+            # 줄은 있는데 하나도 못 읽었으면 "파일 없음"이 아니라 형식 문제다
+            reasons.append(parse_reason or f"{s.server}에서 로그 파일을 찾지 못했어요")
         else:
             start = oldest if since is None else max(since, oldest)
             days = (until_d - _parse(start)).days
             coverages.append(days)
             if days < cfg.thresholds.min_coverage_days:
                 reasons.append(f"{s.server}은 로그가 {days}일치뿐이에요")
+            if parse_reason:
+                reasons.append(parse_reason)
+            newest = s.newest_date
+            if newest is not None and newest < stale_before:
+                reasons.append(f"{s.server}의 최신 로그가 {newest[:4]}-{newest[4:6]}-{newest[6:8]}예요"
+                               " — 최근 로그가 포함됐는지 확인해 주세요")
         if s.truncated:
             reasons.append(f"{s.server} 결과가 너무 많아 일부만 집계됐어요")
         if any(code in _FILE_ERROR_CODES for code, _ in s.file_errors):

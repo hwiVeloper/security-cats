@@ -126,3 +126,46 @@ def test_summary_sentence():
     assert summary_sentence(10, 0, 0, 200) == "API 10개 모두 깨어 있어요! 🐾"
     assert summary_sentence(10, 2, 0, 275) == "API 10개 중 2개가 9개월째 자고 있어요."
     assert summary_sentence(10, 2, 0, 12) == "API 10개 중 2개가 12일째 자고 있어요."
+
+
+def test_reliability_no_servers():
+    r = run([op()], {"GET /a": stats()}, [])[1]
+    assert r.level == "low" and r.coverage_days == 0
+    assert r.reasons == ["등록된 서버가 없어요"]
+
+
+@pytest.mark.parametrize("files,reason", [
+    ([FileStat("/l", "20250101", "20261118", 100, 25, 0)], "25%"),
+    ([FileStat("/a", "20250101", "20261118", 50, 10, 0),
+      FileStat("/b", "20250101", "20261118", 50, 10, 0)], "20%"),  # 파일 합산, 경계(포함)
+    ([FileStat("/l", "20250101", "20261118", 100, 19, 0)], None),
+    ([FileStat("/l", "20250101", "20261118", 0, 0, 0)], None),
+])
+def test_reliability_parse_fail_ratio(files, reason):
+    r = run([op()], {"GET /a": stats()}, [server("A", files=files)])[1]
+    if reason is None:
+        assert r.level == "ok" and r.reasons == []
+    else:
+        assert r.level == "low"
+        assert r.reasons == [
+            f"A은 로그 줄의 {reason}를 읽지 못했어요 — 로그 형식 설정을 확인해 주세요"]
+
+
+def test_reliability_all_lines_unparsed_is_not_missing_files():
+    r = run([op()], {"GET /a": stats()},
+            [server("A", files=[FileStat("/l", None, None, 40, 40, 0)])])[1]
+    assert r.level == "low"
+    assert r.reasons == ["A은 로그 줄의 100%를 읽지 못했어요 — 로그 형식 설정을 확인해 주세요"]
+
+
+@pytest.mark.parametrize("newest,stale", [
+    ("20260601", True), ("20261019", True), ("20261020", False), ("20261119", False)])
+def test_reliability_stale_logs(newest, stale):
+    s = server("A", files=[FileStat("/l", "20250101", newest, 10, 0, 0)])
+    r = run([op()], {"GET /a": stats()}, [s])[1]
+    if stale:
+        y, m, d = newest[:4], newest[4:6], newest[6:]
+        assert r.level == "low"
+        assert r.reasons == [f"A의 최신 로그가 {y}-{m}-{d}예요 — 최근 로그가 포함됐는지 확인해 주세요"]
+    else:
+        assert r.level == "ok" and r.reasons == []

@@ -24,7 +24,8 @@ def make_result(service="라운드페이 API"):
         summary="API 3개 중 2개가 1년째 자고 있어요.", apis=apis,
         counts={s.value: 0 for s in Status}, sleeping=2, sleeping_noted=0,
         reliability=Reliability("low", 400, ["WAS-02 스캔 실패: x"]),
-        servers=[ServerSummary("WAS-01", True, None, "20250101", "20261118", 1.5, False),
+        servers=[ServerSummary("WAS-01", True, None, "20250101", "20261118", 1.5, False,
+                               lines=1200, parse_fail=7),
                  ServerSummary("WAS-02", False, "x", None, None, 0.0, False)],
         probe_rest={"distinct": 1, "count": 3})
 
@@ -92,3 +93,14 @@ def test_refresh_notes_removal_clears_note():
     assert cleared.summary == r.summary
     assert noted.apis[1].note == n  # 입력은 그대로
 
+
+
+def test_load_old_result_without_line_counts(tmp_path):
+    d = result_to_dict(make_result())
+    assert (d["servers"][0]["lines"], d["servers"][0]["parse_fail"]) == (1200, 7)
+    for s in d["servers"]:
+        del s["lines"], s["parse_fail"]
+    (tmp_path / "old.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    r = load_result("old", tmp_path)
+    assert r is not None
+    assert [(s.lines, s.parse_fail) for s in r.servers] == [(0, 0), (0, 0)]
