@@ -904,3 +904,18 @@ def test_awk_glob_empty_markers(bash):
         b"F\t/x/a.log\t20261118\t20261118\t1\t0\t0",
         b"R\tGET\t/v1/a\t2xx\t1\t20261118\t20261118",
         b"Q\t0\t0", b"D\tdone", b""]
+
+
+def test_pipeline_sort_ignores_remote_locale(bash, tmp_path):
+    """원격 세션의 LANG/LC_ALL이 UTF-8이어도 sort -u는 바이트로 비교한다. 상위 바이트만 다른
+    두 파일 이름이 합쳐지거나 sort가 "string comparison failed"로 목록을 비우면 안 된다.
+    (Windows에서는 그런 이름의 파일을 만들 수 없어 find를 셸 함수로 바꾼다 → 둘 다 루프에 닿아
+    E unreadable로 나온다.)"""
+    d = tmp_path.resolve()
+    script = build_pipeline(server_for(d, "access.log*", "webtob"), Settings(), None, TOKEN)
+    fake = ("export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8; "
+            r"find() { printf '/nonexistent/napi/access.log.\377\n/nonexistent/napi/access.log.\376\n'; }; ")
+    out = run_script(bash, fake + script)
+    assert out == [b"E\tunreadable\t/nonexistent/napi/access.log.\xfe",
+                   b"E\tunreadable\t/nonexistent/napi/access.log.\xff",
+                   b"Q\t0\t0", b"D\tdone"]

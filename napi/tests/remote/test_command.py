@@ -274,7 +274,8 @@ def test_pipeline_multiple_globs_structure():
         assert script.count(r"""printf '\n\001E%s\tglob_empty\t%s\n' "$0" """
                             + shlex.quote(g) + ";") == 1
     # 전체 목록은 sort -u로 중복을 지운 뒤 v1 파일 루프로 간다
-    assert "| sort -u | while IFS= read -r f; do " in script
+    # sort는 원격 세션의 로캘이 아니라 바이트 순서로 (LANG=ko_KR.UTF-8 등에서 이름이 합쳐지지 않게)
+    assert "| LC_ALL=C sort -u | while IFS= read -r f; do " in script
     assert "| sort |" not in script
 
 

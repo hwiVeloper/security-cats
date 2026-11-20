@@ -85,7 +85,7 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
     newermt = [] if since is None else ["-newermt", f"{since[:4]}-{since[4:6]}-{since[6:]}"]
 
     # glob마다 find 결과를 변수 gN에 받아 둔다. 비어 있으면 glob_empty 표시를 내고,
-    # 모두 모은 목록은 sort -u로 중복을 지운 뒤 v1 파일 루프로 넘긴다.
+    # 모두 모은 목록은 LC_ALL=C sort -u로 중복을 지운 뒤 v1 파일 루프로 넘긴다.
     # (표시는 sort가 입력을 다 받기 전에 나가므로 항상 첫 F 표시보다 앞이다.)
     finds, empty_marks, lists = [], [], []
     for i, glob in enumerate(globs, 1):
@@ -100,7 +100,9 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
     awk = ["LC_ALL=C", "awk", "-v", f"SINCE={since or 0}", "-v", f"MAXROWS={max_rows}",
            "-v", f"MAXKEYS={4 * max_rows}", "-v", f"TOP404={top_404}",
            "-v", 'MARK="$0"', shlex.quote(program)]
-    body = " ".join([*empty_marks, " | ".join([list_files, "sort -u", _FILE_LOOP])])
+    # LC_ALL=C: 원격 세션 로캘(sshd/PAM의 LANG=ko_KR.UTF-8 등)에서 sort -u는 같은 순위로
+    # 정렬되는 서로 다른 이름을 합치고, 잘못된 바이트가 든 이름에서는 목록 없이 실패한다.
+    body = " ".join([*empty_marks, " | ".join([list_files, "LC_ALL=C sort -u", _FILE_LOOP])])
     return " ".join([*finds, "{", body + ";", "}", "|", " ".join(awk)])
 
 
