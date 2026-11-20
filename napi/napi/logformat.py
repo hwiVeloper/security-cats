@@ -20,14 +20,23 @@ AWK PARITY CONTRACT (awk가 그대로 따라야 하는 의미, v1)
 - "%" 규칙의 길이는 UTF-8 바이트 수다. 한글 한 글자는 3바이트.
 
 FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용하는 규칙)
-- 토큰: lit(리터럴 text) 또는 field(directive). compile_format이 field 두 개가 붙는 것을
-  막으므로 field 다음 토큰은 항상 lit이거나 없다.
+- 토큰: lit(정확히 맞아야 하는 리터럴 text), ws(공백 리터럴), field(directive).
+  compile_format은 패턴의 리터럴을 EXACT 부분(lit)과 space/tab 연속(ws)으로 번갈아 나눈다.
+  field 두 개가 붙는 것을 막으므로 field 다음 토큰은 항상 lit 또는 ws이거나 없다.
+- 필수 토큰: 요청(r, m, U), 날짜(t, time_layout이 있는 tfmt), 상태(s).
+  last_essential = 그중 마지막 토큰의 위치. 토큰을 앞에서부터 차례로 처리하다가 last_essential
+  토큰을 처리하면 그 즉시 성공한다. 그 뒤 토큰은 보지 않는다(없거나 틀려도 된다).
+  그 전까지는 하나라도 실패하면 줄 전체가 실패다.
 - 줄 정리: 줄 끝의 "\n" 하나, 그다음 "\r" 하나를 제거한다. 커서는 1부터 시작한다
-  (Python 구현은 0부터). 토큰을 앞에서부터 차례로 처리하고, 하나라도 실패하면 줄 전체가 실패다.
+  (Python 구현은 0부터). 줄 앞 공백은 건너뛰지 않는다 (패턴이 ws로 시작할 때만 ws가 먹는다).
 - lit: 커서 위치의 부분 문자열이 text와 정확히 같아야 한다. 같으면 커서를 length(text)만큼 옮긴다.
-- field (t 제외): 다음 토큰이 lit이면 커서부터 그 text가 처음 나오는 위치 직전까지가 값이다
-  (빈 값도 된다). text가 없으면 실패. 커서는 그 위치(다음 lit의 시작)로 옮긴다.
-  다음 토큰이 없으면 줄 끝까지가 값이다.
+- ws: 커서 위치에 space/tab이 하나 이상 있어야 하고, 이어지는 space/tab을 모두 먹는다.
+- field (t 제외)의 값. 다음 토큰은 last_essential 뒤에 있어도 경계로 쓴다:
+  - 다음 토큰이 lit이면 커서부터 그 text가 처음 나오는 위치 직전까지 (빈 값도 된다).
+    text가 없으면 실패. 커서는 그 위치(다음 lit의 시작)로 옮긴다.
+  - 다음 토큰이 ws이면 커서부터 처음 나오는 space 또는 tab 직전까지, 없으면 줄 끝까지.
+    값이 비어 있으면 실패. 커서는 값 끝으로 옮긴다.
+  - 다음 토큰이 없으면 줄 끝까지 (빈 값도 된다).
 - t: 커서 위치 문자가 "["이어야 하고, 커서부터 처음 나오는 "]"까지(포함)가 값이다. "]"가 없으면 실패.
   값의 둘째 글자부터 ^[0-9][0-9]/[A-Za-z][A-Za-z][A-Za-z]/[0-9][0-9][0-9][0-9]로 시작해야 하고
   월 이름이 v1 월 맵(Jan..Dec, 대소문자 구분)에 있어야 한다. 날짜 = yyyy mm dd.
@@ -41,7 +50,7 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
 - s: 값이 ^[0-9][0-9][0-9]$이어야 한다. status = 값. 형식에 s가 없으면 status는 없음(None, awk는 "").
 - 그 밖의 field(h l u q H b B D T i o skip): 값을 버린다.
 - 같은 종류의 값을 정하는 field가 여러 번 나오면 나중 것이 이긴다.
-- 마지막 토큰을 소비한 뒤 남은 글자는 무시한다.
+- 마지막으로 처리한 토큰 뒤에 남은 글자는 무시한다.
 - 바이트/문자: 리터럴 찾기와 비교는 어느 쪽이든 결과가 같다. tfmt의 폭과 오프셋은 UTF-8 바이트다
   (awk LC_ALL=C의 length/substr과 같게).
 - 상태군: status가 있으면 첫 글자 + "xx", 없으면 "???".
@@ -108,8 +117,10 @@ class ParsedLine:
 
 @dataclass(frozen=True)
 class Token:
-    kind: Literal["lit", "field"]
-    text: str  # lit: 리터럴, field: 형식에 적힌 지시자 원문 (예: "%{Referer}i")
+    kind: Literal["lit", "ws", "field"]
+    # lit: 정확히 맞아야 하는 리터럴, ws: 패턴의 space/tab 연속(줄에서는 1개 이상과 맞음),
+    # field: 형식에 적힌 지시자 원문 (예: "%{Referer}i")
+    text: str
     directive: str = ""
     # tfmt: 날짜 항목 (Y|m|d|b, 바이트 오프셋, 길이). 날짜를 다 갖춘 형식일 때만 채운다.
     time_layout: tuple[tuple[str, int, int], ...] = ()
@@ -120,6 +131,19 @@ class Token:
 class FormatSpec:
     tokens: tuple[Token, ...]
     has_status: bool
+
+    @property
+    def last_essential(self) -> int:
+        """마지막 필수 토큰(요청, 날짜, 상태)의 위치. 없으면 -1."""
+        return max((i for i, t in enumerate(self.tokens) if _is_essential(t)), default=-1)
+
+
+_ESSENTIAL = frozenset(("r", "m", "U", "s", "t"))
+
+
+def _is_essential(tok: Token) -> bool:
+    return tok.kind == "field" and (
+        tok.directive in _ESSENTIAL or (tok.directive == "tfmt" and bool(tok.time_layout)))
 
 
 # 지시자 문자 -> directive. 여기에 없는 문자(와 %*)는 skip.
@@ -155,6 +179,15 @@ def _time_layout(arg: str) -> tuple[tuple[tuple[str, int, int], ...], int]:
     return (tuple(layout) if full else ()), off
 
 
+_WS_SPLIT_RE = re.compile(r"([ \t]+)")
+
+
+def _literal_tokens(text: str) -> list[Token]:
+    """리터럴을 EXACT(lit)와 space/tab 연속(ws)으로 번갈아 나눈다."""
+    return [Token("ws" if i % 2 else "lit", part)
+            for i, part in enumerate(_WS_SPLIT_RE.split(text)) if part]
+
+
 def compile_format(pattern: str) -> FormatSpec:
     """Apache LogFormat 문자열을 토큰 목록으로 바꾼다. 잘못되면 FormatError."""
     tokens: list[Token] = []
@@ -184,7 +217,7 @@ def compile_format(pattern: str) -> FormatSpec:
         text = pattern[i:j + 1]
         i = j + 1
         if lit:
-            tokens.append(Token("lit", "".join(lit)))
+            tokens += _literal_tokens("".join(lit))
             lit.clear()
         elif tokens and tokens[-1].kind == "field":
             raise FormatError(f"필드 사이에 구분 문자가 필요해요: {tokens[-1].text}{text}")
@@ -194,7 +227,7 @@ def compile_format(pattern: str) -> FormatSpec:
         else:
             tokens.append(Token("field", text, letter if letter in _DIRECTIVES else "skip"))
     if lit:
-        tokens.append(Token("lit", "".join(lit)))
+        tokens += _literal_tokens("".join(lit))
 
     dirs = {t.directive for t in tokens if t.kind == "field"}
     has_request = "r" in dirs or {"m", "U"} <= dirs
@@ -266,6 +299,20 @@ def _tfmt_date(value: str, tok: Token) -> str | None:
     return parts["Y"] + parts["m"] + parts["d"]
 
 
+def _ws_end(line: str, pos: int) -> int:
+    """pos부터 이어지는 space/tab 연속의 끝."""
+    while pos < len(line) and line[pos] in " \t":
+        pos += 1
+    return pos
+
+
+def _ws_start(line: str, pos: int) -> int:
+    """pos부터 처음 나오는 space 또는 tab의 위치. 없으면 줄 끝."""
+    while pos < len(line) and line[pos] not in " \t":
+        pos += 1
+    return pos
+
+
 def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
     """FORMAT PARSE CONTRACT대로 한 줄을 읽는다. 읽을 수 없으면 None."""
     line = _strip_eol(line)
@@ -273,11 +320,18 @@ def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
     pos = 0
     method = path = date = None
     status = None
-    for idx, tok in enumerate(toks):
+    for idx in range(spec.last_essential + 1):  # 마지막 필수 토큰까지만 본다
+        tok = toks[idx]
         if tok.kind == "lit":
             if not line.startswith(tok.text, pos):
                 return None
             pos += len(tok.text)
+            continue
+        if tok.kind == "ws":
+            end = _ws_end(line, pos)
+            if end == pos:
+                return None
+            pos = end
             continue
         d = tok.directive
         if d == "t":
@@ -292,12 +346,17 @@ def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
                 return None
             pos = end + 1
             continue
-        if idx + 1 < len(toks):
-            end = line.find(toks[idx + 1].text, pos)
-            if end < 0:
+        nxt = toks[idx + 1] if idx + 1 < len(toks) else None
+        if nxt is None:
+            end = len(line)
+        elif nxt.kind == "ws":
+            end = _ws_start(line, pos)
+            if end == pos:
                 return None
         else:
-            end = len(line)
+            end = line.find(nxt.text, pos)
+            if end < 0:
+                return None
         value = line[pos:end]
         pos = end
         if d == "tfmt":

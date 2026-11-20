@@ -42,18 +42,36 @@ def test_builtin_patterns_compile():
 
 def test_compile_tokens_webtob():
     spec = compile_format(BUILTIN_FORMATS["webtob"])
-    assert [(t.kind, t.text if t.kind == "lit" else t.directive) for t in spec.tokens] == [
-        ("field", "h"), ("lit", " "), ("field", "l"), ("lit", " "), ("field", "u"),
-        ("lit", " "), ("field", "t"), ("lit", ' "'), ("field", "r"), ("lit", '" '),
-        ("field", "s"), ("lit", " "), ("field", "b"),
+    assert [(t.kind, t.directive if t.kind == "field" else t.text) for t in spec.tokens] == [
+        ("field", "h"), ("ws", " "), ("field", "l"), ("ws", " "), ("field", "u"),
+        ("ws", " "), ("field", "t"), ("ws", " "), ("lit", '"'), ("field", "r"), ("lit", '"'),
+        ("ws", " "), ("field", "s"), ("ws", " "), ("field", "b"),
     ]
+    assert spec.last_essential == 12  # %s
+
+
+def test_compile_splits_literals_into_exact_and_ws():
+    spec = compile_format('[%{%Y-%m-%d}t]  \t[CLIENT(%h)] "%r" x %s')
+    assert [(t.kind, t.text) for t in spec.tokens if t.kind != "field"] == [
+        ("lit", "["), ("lit", "]"), ("ws", "  \t"), ("lit", "[CLIENT("), ("lit", ")]"),
+        ("ws", " "), ("lit", '"'), ("lit", '"'), ("ws", " "), ("lit", "x"), ("ws", " "),
+    ]
+
+
+def test_last_essential():
+    combined = compile_format(BUILTIN_FORMATS["apache_combined"])
+    assert combined.tokens[combined.last_essential].directive == "s"
+    spec = compile_format('%s %t %m %U ?%q %h')
+    assert spec.tokens[spec.last_essential].directive == "U"
+    spec = compile_format('"%r" [%t] %b')
+    assert spec.tokens[spec.last_essential].directive == "t"
 
 
 def test_compile_directive_mapping():
     spec = compile_format('%t "%r" %>s %{Referer}i %{X}o %B %D %T %q %H %* %Z %%x')
     fields = [t.directive for t in spec.tokens if t.kind == "field"]
     assert fields == ["t", "r", "s", "i", "o", "B", "D", "T", "q", "H", "skip", "skip"]
-    assert spec.tokens[-1] == Token("lit", " %x")
+    assert spec.tokens[-2:] == (Token("ws", " "), Token("lit", "%x"))
 
 
 def test_compile_time_layout():
@@ -234,3 +252,86 @@ def test_test_format_results():
         "status_class": None, "date": None}
     res = run_test_format(USER_A, "garbage")
     assert res["ok"] is False and res["error"] == "이 형식으로 읽을 수 없는 줄이에요"
+
+
+# ---- 판정 R4: 공백 리터럴은 유연하게, 필수 토큰을 다 읽으면 성공 ----
+
+WEBTOB_HEAD = '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] '
+
+
+@pytest.mark.parametrize("line", [
+    '1.1.1.1  -\t-   [18/Nov/2026:10:00:01 +0900]  "GET /a HTTP/1.1"   200  1',
+    WEBTOB_HEAD + '"GET /a HTTP/1.1"\t200\t1',
+    WEBTOB_HEAD + '"  GET   /a   HTTP/1.1  "   200 1',
+])
+def test_ws_literal_matches_any_run_of_spaces_and_tabs(line):
+    assert parse_line(line, "webtob") == ParsedLine("GET", "/a", 200, "20261118")
+
+
+def test_field_before_ws_ends_at_space_or_tab_and_must_be_non_empty():
+    spec = compile_format('%h %m %U %t %s')
+    assert parse_with_spec("1.1.1.1\tGET /a?x=1\t[18/Nov/2026:10:00:01] 200", spec) == \
+        ParsedLine("GET", "/a?x=1", 200, "20261118")
+    # 줄 앞 공백은 패턴이 공백으로 시작하지 않으면 건너뛰지 않는다 (%h가 빈 값 -> 실패)
+    assert parse_with_spec(" 1.1.1.1 GET /a [18/Nov/2026:10:00:01] 200", spec) is None
+    assert parse_line(" " + WEBTOB_HEAD + '"GET /a HTTP/1.1" 200 1', "webtob") is None
+
+
+def test_pattern_starting_with_ws_requires_leading_ws():
+    spec = compile_format(' %t "%r" %s')
+    line = '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 200'
+    assert parse_with_spec(line, spec) is None
+    assert parse_with_spec(" \t " + line, spec) == ParsedLine("GET", "/a", 200, "20261118")
+
+
+def test_field_before_exact_may_be_empty_and_needs_the_literal():
+    spec = compile_format('%t "%r" <%h> %s')
+    ok = '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" <> 200'
+    assert parse_with_spec(ok, spec) == ParsedLine("GET", "/a", 200, "20261118")
+    assert parse_with_spec(ok.replace(">", ")"), spec) is None
+
+
+@pytest.mark.parametrize("fmt", ["apache_combined", "nginx_combined", "webtob_combined"])
+@pytest.mark.parametrize("tail", ["", " 512", " 512 garbage", ' 512 "-"', " - x\"y"])
+def test_tokens_after_last_essential_are_not_checked(fmt, tail):
+    line = WEBTOB_HEAD + '"GET /v1/a HTTP/1.1" 200' + tail
+    assert parse_line(line, fmt) == ParsedLine("GET", "/v1/a", 200, "20261118")
+    assert parse_line(line + "\r\n", fmt) == ParsedLine("GET", "/v1/a", 200, "20261118")
+
+
+def test_webtob_without_bytes_field_parses():
+    assert parse_line(WEBTOB_HEAD + '"GET /a HTTP/1.1" 200', "webtob") == \
+        ParsedLine("GET", "/a", 200, "20261118")
+
+
+@pytest.mark.parametrize("line", [
+    '1.1.1.1 - - 18/Nov/2026:10:00:01 +0900 "GET /a HTTP/1.1" 200 1',    # [ 없음
+    '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900]"GET /a HTTP/1.1" 200 1',   # 공백 없음
+    '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] GET /a HTTP/1.1 200 1',    # 따옴표 없음
+    '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1"200 1',   # 상태 앞 공백 없음
+    '1.1.1.1 - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 200 1',    # 필드 하나 빠짐
+])
+def test_mismatch_before_status_is_none(line):
+    assert parse_line(line, "webtob") is None
+    assert parse_line(line, "apache_combined") is None
+
+
+def test_user_format_mismatch_before_last_essential_is_none():
+    spec = compile_format(USER_A)
+    good = '[2026-11-18T10:00:01] [CLIENT(h)] "GET /a HTTP/1.1" 200'
+    assert parse_with_spec(good, spec) == ParsedLine("GET", "/a", 200, "20261118")
+    assert parse_with_spec(good.replace("[CLIENT(", "[CLIENT "), spec) is None
+    assert parse_with_spec(good.replace(")]", ")"), spec) is None
+
+
+def test_early_success_without_status_format():
+    spec = compile_format('%t "%r" %h [%{%d/%b/%Y}t]')
+    assert spec.has_status is False
+    assert spec.tokens[spec.last_essential].directive == "tfmt"
+    line = '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" h [19/Nov/2026]'
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", None, "20261119")
+    assert parse_with_spec(line.replace("[19", "(19"), spec) is None
+    # 날짜 없는 시각 필드는 필수가 아니다
+    spec = compile_format('%t "%r" %{%H:%M}t')
+    line = '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" bogus'
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", None, "20261118")
