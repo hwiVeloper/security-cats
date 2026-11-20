@@ -4,8 +4,8 @@ import shlex
 import pytest
 
 from napi.logformat import BUILTIN_FORMATS, FormatError
-from napi.models import CustomFormat, LogFormatDef, ServerConfig, Settings
-from napi.remote.awk_program import awk_program
+from napi.models import CustomFormat, LogFormatDef, LogPath, ServerConfig, Settings
+from napi.remote.awk_program import awk_program, awk_program_multi
 from napi.remote.command import build_pipeline, build_remote_command, split_glob
 
 TOKEN = "napi-scan-0a1b2c3d"
@@ -16,16 +16,21 @@ USER_FORMATS = [
 ALL_FORMATS = [*BUILTIN_FORMATS, "my", "my_b"]
 
 
-def make_server(**kw):
-    base = dict(name="web1", host="10.0.0.1", user="app",
-                log_globs=["/webtob/log/access.log*"])
-    base.update(kw)
-    return ServerConfig(**base)
+def make_server(log_globs=("/webtob/log/access.log*",), log_format="webtob",
+                custom_format=None, **kw):
+    """경로마다 같은 형식 (log_globs 하나하나가 log_format/custom_format을 쓰는 LogPath)."""
+    return ServerConfig(**{"name": "web1", "host": "10.0.0.1", "user": "app", **kw},
+                        log_paths=[LogPath(g, log_format, custom_format) for g in log_globs])
+
+
+def program_of(server, formats=()):
+    return awk_program_multi([(p.log_format, p.custom_format) for p in server.log_paths],
+                             formats)
 
 
 def shell_portions(server, settings, since):
     """(원격 명령의 바깥 셸 부분, sh -c 본문의 셸 부분). awk 프로그램은 자리표시자로 바꾼다."""
-    prog_q = shlex.quote(awk_program(server.log_format, server.custom_format))
+    prog_q = shlex.quote(program_of(server))
     script = build_pipeline(server, settings, since, TOKEN)
     assert script.count(prog_q) == 1
     script_q = shlex.quote(script)
@@ -90,7 +95,7 @@ def test_pipeline_markers_carry_token_from_dollar_zero():
     """파일 표시와 오류 표시는 토큰("$0")을 담고, awk도 같은 "$0"을 MARK로 받는다."""
     script = build_pipeline(make_server(), Settings(), None, TOKEN)
     assert TOKEN not in script  # 토큰은 실행할 때 $0으로만 들어온다
-    assert r"""printf '\n\001F%s\t%s\n' "$0" "$f";""" in script
+    assert r"""printf '\n\001F%s\t%s\t%s\n' "$0" "$n" "$f";""" in script
     assert r"""if [ ! -r "$f" ]; then printf '\n\001E%s\tunreadable\t%s\n' "$0" "$f"; continue; fi;""" in script
     assert r"""gzip -dcf -- "$f" 2>/dev/null || printf '\n\001E%s\tdecompress_failed\t%s\n' "$0" "$f";""" in script
     assert script.count('-v MARK="$0"') == 1
@@ -221,6 +226,7 @@ def test_awk_program_has_no_clf_parser():
 def test_command_passes_formats():
     server = make_server(log_format="my")
     prog_q = shlex.quote(awk_program("my", None, USER_FORMATS))
+    assert prog_q == shlex.quote(program_of(server, USER_FORMATS))
     script = build_pipeline(server, Settings(), None, TOKEN, USER_FORMATS)
     assert script.count(prog_q) == 1
     cmd = build_remote_command(server, Settings(), None, TOKEN, formats=USER_FORMATS)
@@ -273,10 +279,16 @@ def test_pipeline_multiple_globs_structure():
     for g in ("/a/x/access.log*", "/b/it's/err*.log"):
         assert script.count(r"""printf '\n\001E%s\tglob_empty\t%s\n' "$0" """
                             + shlex.quote(g) + ";") == 1
-    # 전체 목록은 sort -u로 중복을 지운 뒤 v1 파일 루프로 간다
+    # 목록 줄마다 경로 번호를 붙인다 (중복 glob 3번은 find하지 않으므로 번호도 없다)
+    assert r"""printf '1/%s\n' "$f"; done;""" in script
+    assert r"""printf '2/%s\n' "$f"; done;""" in script
+    assert "printf '3/" not in script and "$g3" not in script
+    # 경로, 번호 순으로 정렬해 같은 경로의 첫 줄만 파일 루프가 읽는다
     # sort는 원격 세션의 로캘이 아니라 바이트 순서로 (LANG=ko_KR.UTF-8 등에서 이름이 합쳐지지 않게)
-    assert "| LC_ALL=C sort -u | while IFS= read -r f; do " in script
+    assert ("| LC_ALL=C sort -t/ -k2 -k1,1n | { p=; while IFS= read -r l; do "
+            'n=${l%%/*}; f=${l#*/}; [ "$f" = "$p" ] && continue; p=$f; ') in script
     assert "| sort |" not in script
+    assert "sort -u" not in script
 
 
 def test_pipeline_requires_a_glob():

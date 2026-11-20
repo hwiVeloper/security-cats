@@ -1,9 +1,9 @@
-from napi.models import ServerConfig
+from napi.models import LogPath, ServerConfig
 from napi.secrets import SessionSecrets
 
 
 def make_server(name, host, auth="password", key_file=None):
-    return ServerConfig(name=name, host=host, user="app", log_globs=["/log/access.log*"],
+    return ServerConfig(name=name, host=host, user="app", log_paths=[LogPath("/log/access.log*")],
                         auth=auth, key_file=key_file)
 
 

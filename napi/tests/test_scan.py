@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from napi.models import (
-    AggRow, FileStat, ServerConfig, ServerScanResult, ServiceConfig, Settings,
+    AggRow, FileStat, LogPath, ServerConfig, ServerScanResult, ServiceConfig, Settings,
     SpecOperation, SpecSource, Status,
 )
 from napi.scan import ScanError, run_scan
@@ -29,8 +29,8 @@ class FakeCollector:
 
 def cfg():
     return ServiceConfig(name="svc", spec=SpecSource(location="http://s"),
-                         servers=[ServerConfig("W1", "h", "u", "/l"),
-                                  ServerConfig("W2", "h", "u", "/l")])
+                         servers=[ServerConfig("W1", "h", "u", [LogPath("/l")]),
+                                  ServerConfig("W2", "h", "u", [LogPath("/l")])])
 
 
 def test_run_scan_end_to_end():

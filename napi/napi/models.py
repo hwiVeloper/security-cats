@@ -43,16 +43,24 @@ class LogFormatDef:
 
 
 @dataclass
+class LogPath:
+    """로그 경로 하나와 그 경로의 파일을 읽을 형식.
+    glob은 절대 경로 + 파일 이름 패턴, log_format은 형식 이름 ("custom"이면 custom_format)."""
+    glob: str
+    log_format: str = "webtob"
+    custom_format: CustomFormat | None = None
+
+
+@dataclass
 class ServerConfig:
     name: str
     host: str
     user: str
-    log_globs: list[str]  # 각각 절대 경로 + 파일 이름 패턴 (v1의 log_glob 하나를 대체)
+    # 한 파일이 경로 두 개 이상에 걸리면 목록에서 먼저 나온 경로의 형식으로 한 번만 읽는다
+    log_paths: list[LogPath]
     port: int = 22
     auth: Literal["password", "key"] = "password"
     key_file: str | None = None
-    log_format: str = "webtob"
-    custom_format: CustomFormat | None = None
 
 
 @dataclass

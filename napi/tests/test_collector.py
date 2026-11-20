@@ -11,7 +11,7 @@ from paramiko.ssh_exception import NoValidConnectionsError
 
 from napi import collector as collector_mod
 from napi.collector import Collector
-from napi.models import LogFormatDef, ServerConfig, Settings
+from napi.models import LogFormatDef, LogPath, ServerConfig, Settings
 from napi.secrets import SessionSecrets
 
 PW = "pw-Sup3rSecret"
@@ -171,10 +171,9 @@ class FakeClient:
 
 # ---------------------------------------------------------------- helpers
 
-def server(name, host, **kw):
-    base = dict(name=name, host=host, user="app", log_globs=["/log/access.log*"])
-    base.update(kw)
-    return ServerConfig(**base)
+def server(name, host, log_globs=("/log/access.log*",), log_format="webtob", **kw):
+    return ServerConfig(**{"name": name, "host": host, "user": "app", **kw},
+                        log_paths=[LogPath(g, log_format) for g in log_globs])
 
 
 def make(world, tmp_path, settings=None, prompt=None, secrets=None, formats=()):
@@ -381,6 +380,21 @@ def test_bad_config_fails_without_connecting(tmp_path):
     results = c.collect([server("a", "10.0.0.1", log_globs=["relative/access.log"]),
                          server("b", "10.0.0.2")], None, progress, threading.Event())
     assert not results[0].ok and results[0].error.startswith("설정 오류: ")
+    assert results[1].ok
+    assert len(world.clients) == 1
+    assert progress.phases("a") == ["failed"]
+
+
+def test_bad_format_on_one_path_fails_only_that_server(tmp_path):
+    """경로 하나의 형식만 모르는 이름이어도 그 서버만 "설정 오류: …"로 실패한다."""
+    world = World({"10.0.0.1": {}, "10.0.0.2": {}})
+    c, _ = make(world, tmp_path)
+    bad = ServerConfig("a", "10.0.0.1", "app",
+                       [LogPath("/log/access.log*"), LogPath("/log/err*.log", "nope")])
+    progress = Progress()
+    results = c.collect([bad, server("b", "10.0.0.2")], None, progress, threading.Event())
+    assert not results[0].ok
+    assert results[0].error == "설정 오류: 경로 /log/err*.log: 모르는 로그 형식이에요: nope"
     assert results[1].ok
     assert len(world.clients) == 1
     assert progress.phases("a") == ["failed"]

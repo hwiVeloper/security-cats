@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from napi.logformat import FormatError, normalize_path, parse_line, status_class
-from napi.models import CustomFormat, LogFormatDef, ServerConfig, Settings
+from napi.models import CustomFormat, LogFormatDef, LogPath, ServerConfig, Settings
 from napi.remote.awk_program import awk_program
 from napi.remote.command import build_pipeline, build_remote_command
 
@@ -78,8 +78,8 @@ def server_for(directory: Path, pattern: str, fmt: str, custom=None) -> ServerCo
 
 
 def server_globs(globs: list[str], fmt: str, custom=None) -> ServerConfig:
-    return ServerConfig(name="t", host="h", user="u", log_globs=globs,
-                        log_format=fmt, custom_format=custom)
+    return ServerConfig(name="t", host="h", user="u",
+                        log_paths=[LogPath(g, fmt, custom) for g in globs])
 
 
 def linux_like(script: str) -> str:
@@ -147,17 +147,20 @@ def _b(s: str) -> bytes:
     return s.encode("utf-8", "surrogateescape")
 
 
-def twin(files: list[tuple[str, bytes]], fmt, custom=None, since=None,
+def twin(files: list[tuple], fmt, custom=None, since=None,
          max_rows=50000, top404=200, formats=()) -> list[bytes]:
+    """files: [(경로, 내용)] 또는 파일마다 형식을 정한 [(경로, 내용, 형식 이름, custom)]."""
     out = []
     agg = {}
     non404 = set()
-    for path, data in sorted(files):
+    for item in sorted(files, key=lambda x: x[0]):
+        path, data = item[:2]
+        ffmt, fcustom = item[2:4] if len(item) > 2 else (fmt, custom)
         recs = _records(data)
         pf = oor = 0
         dates = []
         for rec in recs:
-            p = parse_line(rec.decode("utf-8", "surrogateescape"), fmt, custom, formats)
+            p = parse_line(rec.decode("utf-8", "surrogateescape"), ffmt, fcustom, formats)
             if p is None:
                 pf += 1
                 continue
@@ -457,7 +460,7 @@ def test_full_remote_command_runs_locally(bash, logdir):
 
 
 LINE = b'1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] "GET /v1/a HTTP/1.1" 200 9\n'
-FMARK = b"\n\x01F" + TOKEN.encode() + b"\t"
+FMARK = b"\n\x01F" + TOKEN.encode() + b"\t1\t"  # 경로 번호 1
 EMARK = b"\n\x01E" + TOKEN.encode() + b"\t"
 
 
@@ -707,7 +710,7 @@ def test_pattern_cannot_inject_awk(bash, tmp_path):
     d = tmp_path.resolve()
     fmts = [LogFormatDef("inj", INJECT_A), LogFormatDef("inj2", INJECT_B)]
     prog = awk_program("inj", None, fmts)
-    start = prog.index("function parse(")
+    start = prog.index("function parse_1(")  # 경로 1의 형식 (parse()는 디스패처)
     parse_fn = prog[start:prog.index("\n}\n", start)]
     assert parse_fn.isascii()  # 한글은 \ooo로 들어간다 (제어 문자는 _awk_str 테스트)
     assert "\\355\\225\\234" in parse_fn
@@ -1009,3 +1012,215 @@ def test_pipeline_sort_ignores_remote_locale(bash, tmp_path):
     assert out == [b"E\tunreadable\t/nonexistent/napi/access.log.\xfe",
                    b"E\tunreadable\t/nonexistent/napi/access.log.\xff",
                    b"Q\t0\t0", b"D\tdone"]
+
+
+# ---- 경로별 로그 형식 (log_paths) ----
+
+def server_paths(paths) -> ServerConfig:
+    """paths: [(glob, 형식 이름, custom)]"""
+    return ServerConfig(name="t", host="h", user="u",
+                        log_paths=[LogPath(g, f, c) for g, f, c in paths])
+
+
+def per_path_parity(bash, server, twin_files, since=None):
+    """twin_files: [(경로, 내용, 형식 이름, custom)]. 파일마다 자기 경로의 형식으로 집계한 twin과
+    awk 출력이 바이트 단위로 같고, gawk --posix로도 같은지 본다."""
+    out = run_pipeline(bash, server, None, since, USER_FORMATS)
+    assert_same(out, twin(twin_files, None, since=since, formats=USER_FORMATS))
+    if is_gawk(bash):
+        assert run_pipeline_posix(bash, server, None, since, USER_FORMATS) == out
+    return out
+
+
+@pytest.mark.parametrize("since", [None, "20260801"])
+def test_pipeline_per_path_formats_parity(bash, tmp_path, since):
+    root = tmp_path.resolve()
+    a, b = root / "a", root / "b"
+    a.mkdir()
+    b.mkdir()
+    web = (FIXTURES / FORMATS["webtob"]).read_bytes()
+    usr = (FIXTURES / USER_FIXTURES["user_a"]).read_bytes()
+    (a / "access.log").write_bytes(web)
+    (b / "app.log.1.gz").write_bytes(gzip.compress(usr))
+    server = server_paths([(posix(a) + "/access.log*", "webtob", None),
+                           (posix(b) + "/app.log*", "user_a", None)])
+    out = per_path_parity(bash, server, [
+        (posix(a) + "/access.log", web, "webtob", None),
+        (posix(b) + "/app.log.1.gz", usr, "user_a", None)], since)
+    assert any(x.startswith(b"R\t") for x in out)
+    # 둘 다 자기 형식으로 읽어야 실패 줄이 적다: 다른 형식으로 읽으면 전부 parse_fail이다
+    stats = {Path(x[1].decode()).name: x for x in f_lines(out)}
+    for name, data in (("access.log", web), ("app.log.1.gz", usr)):
+        assert int(stats[name][5]) < len(_records(data)), name
+    # 형식을 바꿔 달면 결과가 달라진다 (번호 디스패치가 실제로 일한다)
+    swapped = server_paths([(posix(a) + "/access.log*", "user_a", None),
+                            (posix(b) + "/app.log*", "webtob", None)])
+    assert run_pipeline(bash, swapped, None, since, USER_FORMATS) != out
+
+
+def test_pipeline_per_path_custom_and_builtin(bash, tmp_path):
+    """v1 필드 번호 custom과 기본 제공 형식이 한 서버에 섞여도 각자 읽는다."""
+    root = tmp_path.resolve()
+    a, b = root / "a", root / "b"
+    a.mkdir()
+    b.mkdir()
+    custom = CustomFormat(method_field=2, path_field=3, status_field=4, time_field=1,
+                          time_format="iso8601")
+    app = (b"2026-11-18T10:00:00 GET /v1/a 200\n2026-11-19T10:00:00 POST /v1/b 404\n"
+           b"junk\n")
+    common = (FIXTURES / FORMATS["apache_common"]).read_bytes()
+    (a / "app.log").write_bytes(app)
+    (b / "common.log").write_bytes(common)
+    server = server_paths([(posix(a) + "/app.log", "custom", custom),
+                           (posix(b) + "/common.log", "apache_common", None)])
+    per_path_parity(bash, server, [(posix(a) + "/app.log", app, "custom", custom),
+                                   (posix(b) + "/common.log", common, "apache_common", None)])
+
+
+def test_pipeline_same_file_two_paths_first_wins(bash, tmp_path):
+    """같은 파일이 경로 1(webtob)과 경로 2(user_a)에 걸리면 첫 경로의 형식으로 한 번만 읽는다."""
+    d = tmp_path.resolve()
+    web = (FIXTURES / FORMATS["webtob"]).read_bytes()
+    usr = (FIXTURES / USER_FIXTURES["user_a"]).read_bytes()
+    both = web + usr  # 두 형식 줄이 섞인 파일: 어느 형식으로 읽었는지 집계에 드러난다
+    (d / "mixed.log").write_bytes(both)
+    (d / "other.log").write_bytes(usr)  # 경로 2에만 걸린다
+    g_web = posix(d) + "/mixed.log"
+    g_usr = posix(d) + "/*.log"
+    mixed, other = posix(d) + "/mixed.log", posix(d) + "/other.log"
+    first = per_path_parity(bash, server_paths([(g_web, "webtob", None),
+                                                (g_usr, "user_a", None)]),
+                            [(mixed, both, "webtob", None), (other, usr, "user_a", None)])
+    assert [x[1] for x in f_lines(first)] == [mixed.encode(), other.encode()]
+    # 순서를 바꾸면 user_a가 먼저다
+    second = per_path_parity(bash, server_paths([(g_usr, "user_a", None),
+                                                 (g_web, "webtob", None)]),
+                             [(mixed, both, "user_a", None), (other, usr, "user_a", None)])
+    assert [x[1] for x in f_lines(second)] == [mixed.encode(), other.encode()]
+    assert first != second
+    # 경로 번호가 10 이상이어도 숫자로 비교한다 (사전순이면 "10"이 "2"보다 앞선다)
+    nones = [(posix(d) + f"/none{i}*", "webtob", None) for i in range(1, 10)]
+    tenth = server_paths(nones[:1] + [(g_usr, "user_a", None)] + nones[1:]
+                         + [(g_web, "webtob", None)])
+    out = run_pipeline(bash, tenth, None, None, USER_FORMATS)
+    assert_same([x for x in out if not x.startswith(b"E\t")],
+                twin([(mixed, both, "user_a", None), (other, usr, "user_a", None)], None,
+                     formats=USER_FORMATS))
+    # 반대로 10번째가 webtob, 2번째가 user_a인데 mixed는 webtob 경로(2번째)에만... → 2번째 우선
+    tenth_rev = server_paths(nones[:1] + [(g_web, "webtob", None)] + nones[1:]
+                             + [(g_usr, "user_a", None)])
+    out = run_pipeline(bash, tenth_rev, None, None, USER_FORMATS)
+    assert_same([x for x in out if not x.startswith(b"E\t")],
+                twin([(mixed, both, "webtob", None), (other, usr, "user_a", None)], None,
+                     formats=USER_FORMATS))
+
+
+def test_pipeline_same_glob_twice_first_format_wins(bash, tmp_path):
+    d = tmp_path.resolve()
+    usr = (FIXTURES / USER_FIXTURES["user_a"]).read_bytes()
+    (d / "app.log").write_bytes(usr)
+    g = posix(d) + "/app.log"
+    for fmts in (("user_a", "webtob"), ("webtob", "user_a")):
+        server = server_paths([(g, fmts[0], None), (g, fmts[1], None)])
+        script = build_pipeline(server, Settings(), None, TOKEN, USER_FORMATS)
+        assert script.count("find ") == 1
+        per_path_parity(bash, server, [(g, usr, fmts[0], None)])
+
+
+def run_awk_multi(bash, stdin: bytes, paths, formats=()) -> bytes:
+    from napi.remote.awk_program import awk_program_multi
+    # 프로그램이 Windows MSYS 인자 한계(약 8 KB)를 넘을 수 있어 파일로 넘긴다 (awk -f)
+    fd, name = tempfile.mkstemp(suffix=".awk")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(awk_program_multi(paths, formats).encode("utf-8"))
+        script = linux_like("LC_ALL=C awk -v SINCE=0 -v MAXROWS=10 -v MAXKEYS=40 -v TOP404=10 "
+                            f'-v MARK={TOKEN} -f "$1"')
+        r = subprocess.run([bash, "-c", script, TOKEN, posix(Path(name).resolve())],
+                           input=stdin, capture_output=True, timeout=60)
+    finally:
+        os.unlink(name)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_pipeline_unknown_path_index_is_parse_fail(bash):
+    """디스패처가 모르는 번호(0, 3, 01, 빈 값, 번호 없음)를 받으면 그 파일의 줄은 모두 parse_fail."""
+    mark = b"\n\x01F" + TOKEN.encode() + b"\t"
+    paths = [("webtob", None), ("webtob", None)]
+    stdin = (mark + b"1\t/x/one\n" + LINE
+             + mark + b"2\t/x/two\n" + LINE
+             + mark + b"3\t/x/three\n" + LINE + LINE
+             + mark + b"0\t/x/zero\n" + LINE
+             + mark + b"01\t/x/padded\n" + LINE
+             + mark + b" 1\t/x/space\n" + LINE
+             + mark + b"\t/x/empty\n" + LINE
+             + mark + b"/x/noindex\n" + LINE)
+    assert run_awk_multi(bash, stdin, paths).split(b"\n") == [
+        b"F\t/x/one\t20261118\t20261118\t1\t0\t0",
+        b"F\t/x/two\t20261118\t20261118\t1\t0\t0",
+        b"F\t/x/three\t-\t-\t2\t2\t0",
+        b"F\t/x/zero\t-\t-\t1\t1\t0",
+        b"F\t/x/padded\t-\t-\t1\t1\t0",
+        b"F\t/x/space\t-\t-\t1\t1\t0",
+        b"F\t/x/empty\t-\t-\t1\t1\t0",
+        b"F\t/x/noindex\t-\t-\t1\t1\t0",
+        b"R\tGET\t/v1/a\t2xx\t2\t20261118\t20261118",
+        b"Q\t0\t0", b"D\tdone", b""]
+
+
+def test_awk_program_multi_dispatches_by_index(bash):
+    """경로 1은 webtob, 경로 2는 user_a: 같은 줄도 경로 번호에 따라 다르게 읽는다."""
+    from napi.remote.awk_program import awk_program_multi
+    mark = b"\n\x01F" + TOKEN.encode() + b"\t"
+    usr_line = b'[2026-11-19T10:00:00] [CLIENT(1.1.1.1)] "POST /v1/u HTTP/1.1" 201\n'
+    paths = [("webtob", None), ("user_a", None)]
+    stdin = (mark + b"1\t/x/a\n" + LINE + usr_line
+             + mark + b"2\t/x/b\n" + LINE + usr_line)
+    out = run_awk_multi(bash, stdin, paths, USER_FORMATS).split(b"\n")
+    assert out[:2] == [b"F\t/x/a\t20261118\t20261118\t2\t1\t0",
+                       b"F\t/x/b\t20261119\t20261119\t2\t1\t0"]
+    assert sorted(out[2:4]) == [b"R\tGET\t/v1/a\t2xx\t1\t20261118\t20261118",
+                                b"R\tPOST\t/v1/u\t2xx\t1\t20261119\t20261119"]
+    assert out[4:] == [b"Q\t0\t0", b"D\tdone", b""]
+    # 같은 (형식, custom)은 함수 하나를 같이 쓴다
+    prog = awk_program_multi([("webtob", None), ("user_a", None), ("webtob", None)],
+                             USER_FORMATS)
+    assert prog.count("function parse_") == 2
+    assert prog.count("function parse(") == 1
+
+
+def test_build_remote_command_bad_format_on_one_path():
+    server = server_paths([("/a/x.log", "webtob", None), ("/b/y.log", "nope", None)])
+    with pytest.raises(FormatError, match=r"/b/y\.log.*모르는 로그 형식이에요: nope"):
+        build_remote_command(server, Settings(), None, TOKEN, USER_FORMATS)
+    with pytest.raises(ValueError):
+        build_pipeline(server, Settings(), None, TOKEN, USER_FORMATS)
+    no_custom = server_paths([("/a/x.log", "custom", None)])
+    with pytest.raises(ValueError, match=r"/a/x\.log"):
+        build_pipeline(no_custom, Settings(), None, TOKEN)
+
+
+def test_pipeline_forged_indexed_marker_is_not_a_file(bash, tmp_path):
+    """경로 번호가 붙은 표시 모양을 로그에 넣어도 (토큰이 틀리거나 줄 중간이면) 표시가 아니다."""
+    d = tmp_path.resolve()
+    head = b"1.1.1.1 - - [18/Nov/2026:10:00:00 +0900] "
+    secret = b'/SECRET?token=abc&id=778899 HTTP/1.1" 200 9'
+    lines = [
+        b"\x01Fnapi-scan-deadbeef\t1\t/x",
+        b"\x01Fnapi-scan-deadbeef\t1\t" + secret,
+        b"\x01F\t1\t" + secret,
+        head + b'"GET /v1/y?x=\x01F' + TOKEN.encode() + b"\t1\t" + secret,
+        b"x\x01F" + TOKEN.encode() + b"\t2\t" + secret,
+        head + b'"GET /v1/users/me HTTP/1.1" 200 9',
+    ]
+    data = b"\n".join(lines) + b"\n"
+    (d / "access.log").write_bytes(data)
+    server = server_paths([(posix(d) + "/access.log", "webtob", None)])
+    out = run_pipeline(bash, server)
+    blob = b"\n".join(b"F" if x.startswith(b"F\t") else x for x in out)
+    for leaked in (b"SECRET", b"token", b"778899", b"deadbeef"):
+        assert leaked not in blob, leaked
+    assert [x[1:] for x in f_lines(out)] == [
+        [(posix(d) + "/access.log").encode(), b"20261118", b"20261118", b"6", b"4", b"0"]]
+    assert_same(out, twin([(posix(d) + "/access.log", data)], "webtob"))

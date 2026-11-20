@@ -13,7 +13,7 @@ import yaml
 from .logformat import BUILTIN_FORMATS, FormatError, compile_format
 from .remote.command import split_glob
 from .models import (
-    AppConfig, CustomFormat, LogFormatDef, Note, PathMapping, ServerConfig, ServiceConfig,
+    AppConfig, CustomFormat, LogFormatDef, LogPath, Note, PathMapping, ServerConfig, ServiceConfig,
     Settings, SpecSource, Thresholds,
 )
 
@@ -67,29 +67,61 @@ def _fields(d, ints: tuple[str, ...] = (), strs: tuple[str, ...] = (),
     return out
 
 
-_SERVER_STRS = ("name", "host", "user", "auth", "log_format")
+_SERVER_STRS = ("name", "host", "user", "auth")
 _SETTINGS_INTS = ("max_parallel_servers", "remote_timeout_sec", "max_rows", "top_404")
+_LEGACY_PATH_KEYS = ("log_glob", "log_globs")
 
 
-def _log_globs(sv: dict) -> None:
-    """서버 칸의 로그 경로를 log_globs(문자열 목록)로 맞춘다.
-    v1 설정의 log_glob: x는 log_globs: [x]로 읽는다 (저장할 때는 log_globs만 쓴다)."""
-    if "log_glob" in sv:
-        if "log_globs" in sv:
-            raise ConfigError("설정 파일 내용이 올바르지 않습니다: "
-                              "log_glob과 log_globs를 함께 쓸 수 없습니다")
-        sv["log_globs"] = [sv.pop("log_glob")]
-    if "log_globs" not in sv:
-        return  # 빠진 칸은 dataclass 생성이 TypeError(→ ConfigError)로 알린다
-    items = sv["log_globs"]
+def _bad(msg: str) -> ConfigError:
+    return ConfigError(f"설정 파일 내용이 올바르지 않습니다: {msg}")
+
+
+def _as_list(items, key: str) -> list:
+    """목록 칸. 값 하나(손으로 쓴 key: /a/b)는 [값]으로, 빈 값은 []로 읽는다."""
     if items is None:
-        items = []
-    elif isinstance(items, dict):
-        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: "
-                          f"log_globs는 목록이어야 합니다: {items!r}")
-    elif not isinstance(items, list):
-        items = [items]  # 손으로 쓴 log_globs: /a/b (값 하나)
-    sv["log_globs"] = [_str(x) for x in items]
+        return []
+    if isinstance(items, dict):
+        raise _bad(f"{key}는 목록이어야 합니다: {items!r}")
+    return items if isinstance(items, list) else [items]
+
+
+def _custom(cf) -> CustomFormat | None:
+    # 경로마다 따로 만든다 (한 경로를 고쳐도 다른 경로가 같이 바뀌지 않게)
+    return CustomFormat(**cf) if cf else None
+
+
+def _log_paths(sv: dict) -> None:
+    """서버 칸의 로그 경로를 log_paths(LogPath 목록)로 맞춘다.
+
+    log_paths: [{glob, log_format?, custom_format?}]. 항목이 문자열이면 glob이다.
+    빠진 형식은 서버의 log_format/custom_format(없으면 webtob)을 물려받는다.
+    v1/확장 설정의 log_glob: x / log_globs: [...]는 경로마다 서버 형식을 물려받는 log_paths로
+    읽는다. 저장할 때는 log_paths만 쓴다."""
+    default_fmt = _str(sv.pop("log_format", "webtob"))
+    default_cf = sv.pop("custom_format", None)
+    legacy = [k for k in _LEGACY_PATH_KEYS if k in sv]
+    if "log_paths" in sv and legacy:
+        raise _bad(f"log_paths와 {legacy[0]}를 함께 쓸 수 없습니다")
+    if len(legacy) > 1:
+        raise _bad("log_glob과 log_globs를 함께 쓸 수 없습니다")
+    if legacy:
+        globs = _as_list(sv.pop(legacy[0]), legacy[0])
+        sv["log_paths"] = [LogPath(_str(g), default_fmt, _custom(default_cf)) for g in globs]
+        return
+    if "log_paths" not in sv:
+        return  # 빠진 칸은 dataclass 생성이 TypeError(→ ConfigError)로 알린다
+    paths = []
+    for item in _as_list(sv["log_paths"], "log_paths"):
+        if isinstance(item, (list, dict)):
+            d = _fields(item, strs=("glob", "log_format"))
+            if "glob" not in d:
+                raise _bad(f"log_paths 항목에 glob이 없습니다: {item!r}")
+            d.setdefault("log_format", default_fmt)
+            d["custom_format"] = _custom(d.get("custom_format", default_cf))
+            paths.append(LogPath(**d))
+        else:
+            paths.append(LogPath(_str(item), default_fmt, _custom(default_cf)))
+    sv["log_paths"] = paths
 
 
 def _log_formats(items) -> list[LogFormatDef]:
@@ -109,10 +141,8 @@ def _from_dict(d: dict) -> AppConfig:
             servers = []
             for sv in s.get("servers") or []:
                 sv = _fields(sv, ints=("port",), strs=_SERVER_STRS, optional_strs=("key_file",))
-                _log_globs(sv)
-                cf = sv.pop("custom_format", None)
-                servers.append(ServerConfig(
-                    **sv, **({"custom_format": CustomFormat(**cf)} if cf else {})))
+                _log_paths(sv)
+                servers.append(ServerConfig(**sv))
             services.append(ServiceConfig(
                 name=_str(s["name"]),
                 spec=SpecSource(**_fields(s.get("spec"), strs=("type", "source", "location"))),
@@ -226,16 +256,17 @@ def validate_config(cfg: AppConfig) -> list[str]:
                 errors.append(f"{sl}: 포트는 1~65535 사이의 정수여야 합니다.")
             if sv.auth == "key" and not sv.key_file:
                 errors.append(f"{sl}: 키 인증인데 키 파일이 지정되지 않았습니다.")
-            if sv.log_format not in known_formats:
-                errors.append(f"{sl}: 모르는 로그 형식이에요: {sv.log_format}")
-            if sv.log_format == "custom" and sv.custom_format is None:
-                errors.append(f"{sl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
-            if not sv.log_globs:
+            if not sv.log_paths:
                 errors.append(f"{sl}: 로그 경로를 하나 이상 지정해야 합니다.")
-            for glob in sv.log_globs:
-                problem = _glob_problem(glob)
+            for lp in sv.log_paths:
+                problem = _glob_problem(lp.glob)
                 if problem:
                     errors.append(f"{sl}: {problem}")
+                pl = f"{sl}: 경로 {lp.glob}"
+                if lp.log_format not in known_formats:
+                    errors.append(f"{pl}: 모르는 로그 형식이에요: {lp.log_format}")
+                elif lp.log_format == "custom" and lp.custom_format is None:
+                    errors.append(f"{pl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
     return errors
 
 

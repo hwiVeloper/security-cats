@@ -13,7 +13,7 @@ from napi import __main__ as entry
 from napi.api import Api
 from napi.config import load_config, save_config
 from napi.models import (
-    AggRow, AppConfig, FileStat, LogFormatDef, Note, ServerConfig, ServerScanResult,
+    AggRow, AppConfig, FileStat, LogFormatDef, LogPath, Note, ServerConfig, ServerScanResult,
     ServiceConfig, SpecOperation, SpecSource,
 )
 from napi.secrets import SessionSecrets
@@ -34,16 +34,16 @@ def ops():
 
 
 def servers():
-    return [ServerConfig("WAS-01", "10.0.0.1", "app", "/log/access.log*"),
-            ServerConfig("WAS-02", "10.0.0.2", "app", "/log/access.log*"),
-            ServerConfig("WAS-03", "10.0.0.3", "web", "/log/access.log*", port=2222)]
+    return [ServerConfig("WAS-01", "10.0.0.1", "app", [LogPath("/log/access.log*")]),
+            ServerConfig("WAS-02", "10.0.0.2", "app", [LogPath("/log/access.log*")]),
+            ServerConfig("WAS-03", "10.0.0.3", "web", [LogPath("/log/access.log*")], port=2222)]
 
 
 def app_config():
     return AppConfig(services=[
         ServiceConfig(name=SVC, spec=SpecSource(location="http://spec"), servers=servers()),
         ServiceConfig(name="키 서비스", spec=SpecSource(location="http://k"), servers=[
-            ServerConfig("K1", "10.0.1.1", "ops", "/log/a.log", auth="key",
+            ServerConfig("K1", "10.0.1.1", "ops", [LogPath("/log/a.log")], auth="key",
                          key_file="C:/keys/id_ed25519")]),
     ])
 
@@ -302,7 +302,7 @@ def test_preview_commands_uses_user_formats(env):
     api = env["api"]
     cfg = load_config(env["path"])
     cfg.log_formats = [LogFormatDef("user_a", USER_A)]
-    cfg.services[0].servers[0].log_format = "user_a"
+    cfg.services[0].servers[0].log_paths[0].log_format = "user_a"
     save_config(cfg, env["path"])
     res = api.preview_commands(SVC, "90")
     assert "CLIENT(" in res["WAS-01"]
@@ -322,7 +322,7 @@ def test_start_scan_passes_user_formats(env):
 def test_preview_commands(env):
     api = env["api"]
     cfg = load_config(env["path"])
-    cfg.services[0].servers[2].log_globs = ["relative/*.log"]
+    cfg.services[0].servers[2].log_paths = [LogPath("relative/*.log")]
     save_config(cfg, env["path"])
     res = api.preview_commands(SVC, "90")
     assert set(res) == {"WAS-01", "WAS-02", "WAS-03"}

@@ -6,8 +6,8 @@ import pytest
 
 from napi.config import ConfigError, load_config, save_config, validate_config
 from napi.models import (
-    AppConfig, CustomFormat, LogFormatDef, Note, ServerConfig, ServerScanResult, FileStat,
-    ServiceConfig, SpecSource,
+    AppConfig, CustomFormat, LogFormatDef, LogPath, Note, ServerConfig, ServerScanResult,
+    FileStat, ServiceConfig, SpecSource,
 )
 
 
@@ -16,8 +16,8 @@ def make_service(name="결제", **kw):
         name=name,
         spec=SpecSource(type="openapi", source="url", location="http://x/api-docs"),
         servers=[
-            ServerConfig(name="web1", host="10.0.0.1", user="app", log_globs=["/var/log/web/access.log*"]),
-            ServerConfig(name="web2", host="10.0.0.2", user="app", log_globs=["/var/log/web/access.log*"],
+            ServerConfig(name="web1", host="10.0.0.1", user="app", log_paths=[LogPath("/var/log/web/access.log*")]),
+            ServerConfig(name="web2", host="10.0.0.2", user="app", log_paths=[LogPath("/var/log/web/access.log*")],
                          auth="key", key_file="C:/keys/id_rsa"),
         ],
         notes={"GET /v1/settlements/yearly": Note("연 1회 정산용 (1월)", "홍길동", "2026-11-19")},
@@ -63,6 +63,10 @@ def test_invalid_yaml_raises_config_error(tmp_path):
     assert "설정 파일" in str(e.value)
 
 
+def _set_globs(svc, globs):
+    svc.servers[0].log_paths = [LogPath(g) for g in globs]
+
+
 def _errs(svc_mut):
     svc = make_service()
     svc_mut(svc)
@@ -75,13 +79,13 @@ def test_validate():
 
     assert _errs(lambda s: setattr(s.servers[0], "host", ""))
     assert _errs(lambda s: setattr(s.servers[0], "auth", "key"))  # key_file 없음
-    assert _errs(lambda s: setattr(s.servers[0], "log_format", "custom"))
-    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ["/var/*/log/access.log*"]))
-    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ["var/log/access.log"]))
+    assert _errs(lambda s: setattr(s.servers[0].log_paths[0], "log_format", "custom"))
+    assert _errs(lambda s: _set_globs(s, ["/var/*/log/access.log*"]))
+    assert _errs(lambda s: _set_globs(s, ["var/log/access.log"]))
     # 정상 custom
     ok = make_service()
-    ok.servers[0].log_format = "custom"
-    ok.servers[0].custom_format = CustomFormat(6, 7, 9, 4, "clf")
+    ok.servers[0].log_paths[0].log_format = "custom"
+    ok.servers[0].log_paths[0].custom_format = CustomFormat(6, 7, 9, 4, "clf")
     assert validate_config(AppConfig(services=[ok])) == []
 
 
@@ -241,7 +245,7 @@ USER_FORMATS = [
 def test_log_formats_roundtrip(tmp_path):
     p = tmp_path / "c.yaml"
     svc = make_service()
-    svc.servers[0].log_format = "webtob_error_req"
+    svc.servers[0].log_paths[0].log_format = "webtob_error_req"
     cfg = AppConfig(services=[svc], log_formats=list(USER_FORMATS))
     save_config(cfg, p)
     loaded = load_config(p)
@@ -274,7 +278,7 @@ def test_log_formats_scalars_become_strings(tmp_path):
 def test_validate_log_formats():
     def errs(formats, server_format="webtob"):
         svc = make_service()
-        svc.servers[0].log_format = server_format
+        svc.servers[0].log_paths[0].log_format = server_format
         return validate_config(AppConfig(services=[svc], log_formats=formats))
 
     assert errs(list(USER_FORMATS), "method_u") == []
@@ -296,19 +300,20 @@ def test_validate_log_formats():
 
 def test_server_config_field_order():
     assert [f.name for f in dataclasses.fields(ServerConfig)] == [
-        "name", "host", "user", "log_globs", "port", "auth", "key_file", "log_format",
-        "custom_format"]
+        "name", "host", "user", "log_paths", "port", "auth", "key_file"]
+    assert [f.name for f in dataclasses.fields(LogPath)] == [
+        "glob", "log_format", "custom_format"]
 
 
 def test_config_reads_legacy_log_glob(tmp_path):
     p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
                          "  - {name: s, host: h, user: u, log_glob: /x/a.log*}\n")
     cfg = load_config(p)
-    assert cfg.services[0].servers[0].log_globs == ["/x/a.log*"]
+    assert cfg.services[0].servers[0].log_paths == [LogPath("/x/a.log*")]
     save_config(cfg, p)
     text = p.read_text(encoding="utf-8")
-    assert "log_globs" in text
-    assert "log_glob:" not in text
+    assert "log_paths" in text
+    assert "log_glob" not in text
     assert load_config(p) == cfg
 
 
@@ -317,7 +322,7 @@ def test_config_log_globs_roundtrip(tmp_path):
                          "  - name: s\n    host: h\n    user: u\n"
                          "    log_globs: [/x/a.log*, /y/b.log*]\n")
     cfg = load_config(p)
-    assert cfg.services[0].servers[0].log_globs == ["/x/a.log*", "/y/b.log*"]
+    assert cfg.services[0].servers[0].log_paths == [LogPath("/x/a.log*"), LogPath("/y/b.log*")]
     save_config(cfg, p)
     assert load_config(p) == cfg
 
@@ -337,16 +342,16 @@ def test_bad_log_globs_raise_config_error(tmp_path, server):
 def test_log_globs_scalars_become_strings(tmp_path):
     p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
                          "  - {name: s, host: h, user: u, log_globs: /x/a.log}\n")
-    assert load_config(p).services[0].servers[0].log_globs == ["/x/a.log"]
+    assert load_config(p).services[0].servers[0].log_paths == [LogPath("/x/a.log")]
 
 
 def test_validate_log_globs():
-    errs = _errs(lambda s: setattr(s.servers[0], "log_globs", []))
+    errs = _errs(lambda s: _set_globs(s, []))
     assert len(errs) == 1 and "로그 경로를 하나 이상" in errs[0] and "web1" in errs[0]
     ok = ["/var/log/a/access.log*", "/var/log/b/access.log*"]
-    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ok)) == []
+    assert _errs(lambda s: _set_globs(s, ok)) == []
     for bad in ("var/log/access.log", "/var/*/log/access.log*", "/var/lo?/x", "/var/[l]og/x"):
-        errs = _errs(lambda s: setattr(s.servers[0], "log_globs", [ok[0], bad]))
+        errs = _errs(lambda s: _set_globs(s, [ok[0], bad]))
         assert len(errs) == 1 and bad in errs[0], (bad, errs)
 
 
@@ -356,7 +361,7 @@ SL = "서비스 '결제' / 서버 'web1': "
 
 
 def _glob_errs(bad):
-    return _errs(lambda s: setattr(s.servers[0], "log_globs", ["/var/log/a/access.log*", bad]))
+    return _errs(lambda s: _set_globs(s, ["/var/log/a/access.log*", bad]))
 
 
 @pytest.mark.parametrize("bad", ["/var/log/", "/"])
@@ -394,6 +399,101 @@ def test_every_valid_glob_builds_a_pipeline():
                   "/var/l*g/a", "/var/log/.", "/x/y/z/[ab]*.log", "/var/log/a\x7f*"]
     for glob in candidates:
         svc = make_service()
-        svc.servers[0].log_globs = [glob]
+        _set_globs(svc, [glob])
         if validate_config(AppConfig(services=[svc])) == []:
             build_pipeline(svc.servers[0], Settings(), None, "napi-scan-00c0ffee")
+
+
+# ---- 경로별 로그 형식 (log_paths) ----
+
+def _yaml_server(body: str) -> str:
+    return "services:\n- name: a\n  spec: {location: x}\n  servers:\n" + body
+
+
+def test_config_legacy_to_log_paths(tmp_path):
+    from napi.models import LogPath
+    # v1: log_glob 하나 + 서버 log_format
+    p = _write(tmp_path, _yaml_server(
+        "  - {name: s, host: h, user: u, log_glob: /x/a.log*, log_format: webtob}\n"))
+    cfg = load_config(p)
+    assert cfg.services[0].servers[0].log_paths == [LogPath("/x/a.log*", "webtob", None)]
+    save_config(cfg, p)
+    text = p.read_text(encoding="utf-8")
+    assert "log_paths:" in text
+    for legacy in ("log_glob:", "log_globs:", "\n    log_format:", "\n    custom_format:"):
+        assert legacy not in text, legacy
+    assert load_config(p) == cfg
+    # 확장: log_globs 2개 + 서버 log_format: custom + custom_format → 경로마다 물려받는다
+    p2 = tmp_path / "c2.yaml"
+    p2.write_text(_yaml_server(
+        "  - name: s\n    host: h\n    user: u\n    log_globs: [/x/a.log*, /y/b.log*]\n"
+        "    log_format: custom\n"
+        "    custom_format: {method_field: 6, path_field: 7, status_field: 9,"
+        " time_field: 4, time_format: clf}\n"), encoding="utf-8")
+    cfg2 = load_config(p2)
+    cf = CustomFormat(6, 7, 9, 4, "clf")
+    paths = cfg2.services[0].servers[0].log_paths
+    assert paths == [LogPath("/x/a.log*", "custom", cf), LogPath("/y/b.log*", "custom", cf)]
+    assert paths[0].custom_format is not paths[1].custom_format  # 따로 고칠 수 있다
+    assert validate_config(cfg2) == []
+    save_config(cfg2, p2)
+    text2 = p2.read_text(encoding="utf-8")
+    assert "log_globs" not in text2 and "log_paths:" in text2
+    assert set(yaml_server_keys(p2)) == {"name", "host", "user", "log_paths", "port", "auth",
+                                         "key_file"}
+    assert load_config(p2) == cfg2
+    # 서버 형식이 없으면 webtob
+    p3 = tmp_path / "c3.yaml"
+    p3.write_text(_yaml_server("  - {name: s, host: h, user: u, log_globs: [/x/a]}\n"),
+                  encoding="utf-8")
+    assert load_config(p3).services[0].servers[0].log_paths == [LogPath("/x/a")]
+
+
+def yaml_server_keys(p):
+    import yaml
+    return yaml.safe_load(p.read_text(encoding="utf-8"))["services"][0]["servers"][0].keys()
+
+
+def test_config_log_paths_roundtrip_and_validate(tmp_path):
+    from napi.models import LogPath
+    p = _write(tmp_path, _yaml_server(
+        "  - name: s\n    host: h\n    user: u\n    log_format: method_u\n"
+        "    log_paths:\n"
+        "    - /x/plain.log*\n"  # 문자열 하나 = glob, 서버 기본 형식
+        "    - {glob: /y/a.log*, log_format: webtob_error_req}\n"
+        "    - {glob: /z/c.log, log_format: custom, custom_format: {method_field: 2,"
+        " path_field: 3, status_field: 4, time_field: 1, time_format: iso8601}}\n"
+        "    - {glob: /w/d.log}\n"
+        "log_formats:\n"
+        "- {name: webtob_error_req, pattern: '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] \"%r\" %s'}\n"
+        "- {name: method_u, pattern: '%{%d/%b/%Y:%H:%M:%S}t %m %U ?%q %s'}\n"))
+    cfg = load_config(p)
+    assert cfg.services[0].servers[0].log_paths == [
+        LogPath("/x/plain.log*", "method_u"),
+        LogPath("/y/a.log*", "webtob_error_req"),
+        LogPath("/z/c.log", "custom", CustomFormat(2, 3, 4, 1, "iso8601")),
+        LogPath("/w/d.log", "method_u"),
+    ]
+    assert validate_config(cfg) == []
+    save_config(cfg, p)
+    assert load_config(p) == cfg
+    # 경로 하나만 모르는 형식 → 그 glob을 담은 오류
+    cfg.services[0].servers[0].log_paths[1].log_format = "nope"
+    assert validate_config(cfg) == [
+        "서비스 'a' / 서버 's': 경로 /y/a.log*: 모르는 로그 형식이에요: nope"]
+    cfg.services[0].servers[0].log_paths[1].log_format = "custom"
+    errs = validate_config(cfg)
+    assert len(errs) == 1 and "경로 /y/a.log*" in errs[0] and "custom" in errs[0]
+
+
+@pytest.mark.parametrize("server", [
+    "{name: s, host: h, user: u, log_glob: /a, log_paths: [/b]}",
+    "{name: s, host: h, user: u, log_globs: [/a], log_paths: [/b]}",
+    "{name: s, host: h, user: u, log_paths: {glob: /a}}",
+    "{name: s, host: h, user: u, log_paths: [{log_format: webtob}]}",
+    "{name: s, host: h, user: u, log_paths: [{glob: /a, extra: 1}]}",
+    "{name: s, host: h, user: u, log_paths: [[/a]]}",
+])
+def test_bad_log_paths_raise_config_error(tmp_path, server):
+    with pytest.raises(ConfigError, match="설정 파일"):
+        load_config(_write(tmp_path, _yaml_server(f"  - {server}\n")))

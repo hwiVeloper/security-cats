@@ -8,11 +8,15 @@ gawk 전용 기능과 정규식 반복 횟수 {n}은 쓰지 않는다. 반복이
 parse(): 기본 제공 형식과 사용자 형식은 같은 FormatSpec에서 "FORMAT PARSE CONTRACT"를
 토큰마다 펼친 코드로 생성한다 (커서 변수 + substr/index/match). 사용자 패턴의 글자는
 _awk_str로 이스케이프한 문자열 리터럴로만 들어가고 정규식, 주석, 코드에는 들어가지 않는다.
+형식마다 parse_1(), parse_2() ...를 만들고 parse()는 현재 파일의 경로 번호로 하나를 부른다.
 결과는 P_M(메서드), P_U(경로 원문), P_S(상태 3자리 또는 ""), P_D(YYYYMMDD)이다.
 P_S가 ""이면(상태 없는 형식) 상태군은 "???"이고 404가 아닌 것으로 센다.
 
-입력: 셸 루프가 파일마다 "\\n\\001F<MARK>\\t<경로>" 표시 줄을 먼저 내고 파일 내용을
-이어 붙인다. 읽을 수 없는 파일과 압축 해제 실패는 "\\n\\001E<MARK>\\t<코드>\\t<경로>"로 알린다.
+입력: 셸 루프가 파일마다 "\\n\\001F<MARK>\\t<n>\\t<경로>" 표시 줄을 먼저 내고 파일 내용을
+이어 붙인다. <n>은 그 파일을 찾은 로그 경로의 번호(1부터, log_paths 순서)이고, 파일의 줄은
+그 경로의 형식으로 읽는다 (pathfn(n) -> parse_K 번호 PK, parse()가 PK로 고른다). 모르는 번호
+(0, 01, 빈 값, 번호 없음 등)면 그 파일의 줄은 모두 parse_fail이다.
+읽을 수 없는 파일과 압축 해제 실패는 "\\n\\001E<MARK>\\t<코드>\\t<경로>"로 알린다.
 파일이 하나도 없는 glob은 파일 목록보다 먼저 "\\n\\001E<MARK>\\tglob_empty\\t<glob>"으로 알린다.
 glob_empty는 파일로도 오류로도 세지 않는다. 파일(읽지 못한 파일 포함)이 하나도 없으면
 "E\\tno files matched"만 내고 glob_empty 줄은 내지 않는다 (v1과 같은 출력).
@@ -38,7 +42,8 @@ _CLF_TIME_RE = _DIGIT * 2 + r"\/" + _ALPHA * 3 + r"\/" + _DIGIT * 4
 _ISO_DATE_RE = "^" + _DIGIT * 4 + "-" + _DIGIT * 2 + "-" + _DIGIT * 2
 _STATUS_RE = "^" + _DIGIT * 3 + "$"
 
-# 공통 부분: 파일 표시 처리, 정규화, 집계, END 출력. @PARSE@ 자리에 형식별 parse()가 들어간다.
+# 공통 부분: 파일 표시 처리, 정규화, 집계, END 출력. @PARSE@ 자리에 형식별 parse_K()와
+# pathfn(), 디스패처 parse()가 들어간다.
 _COMMON = r"""
 BEGIN {
   MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec"
@@ -58,6 +63,7 @@ BEGIN {
   overflow = 0
   pend = 0
   cur = 0
+  PK = 0
 }
 
 # 공백(space/tab) 기준 토큰화. 앞뒤 공백은 먼저 지운다.
@@ -126,9 +132,17 @@ function clean(p) {
   return p
 }
 
-function newfile(p) {
+# s = "<n>\t<경로>". 경로 번호 n이 PK(이 파일을 읽을 parse_K)를 정한다.
+function newfile(s,    i, n) {
+  i = index(s, "\t")
+  n = ""
+  if (i > 0) {
+    n = substr(s, 1, i - 1)
+    s = substr(s, i + 1)
+  }
+  PK = pathfn(n)
   nfiles++
-  fpath[nfiles] = p
+  fpath[nfiles] = s
   flines[nfiles] = 0
   fpf[nfiles] = 0
   foor[nfiles] = 0
@@ -283,7 +297,7 @@ END {
 
 # custom: [ \t]+로 나눈 N번째 필드
 _PARSE_CUSTOM = r"""
-function parse(line,    f, n, p, tm) {
+function @NAME@(line,    f, n, p, tm) {
   n = ntok(line, f)
   if (@MF@ > n || @PF@ > n || @SF@ > n || @TF@ > n) return 0
   if (f[@MF@] !~ /^[A-Z]+$/ || f[@SF@] !~ /@STATUS@/) return 0
@@ -403,14 +417,14 @@ def _gen_token(tok: Token, nxt: Token | None) -> list[str]:
     return code
 
 
-def _gen_parse(spec: FormatSpec) -> str:
+def _gen_parse(spec: FormatSpec, name: str = "parse") -> str:
     """FORMAT PARSE CONTRACT를 토큰마다 펼친 parse(). 커서 p는 1부터, 바이트 단위다.
     last_essential 토큰까지만 만들고 그 뒤에서 바로 성공한다. 패턴 글자는 _awk_str로만
     들어간다 (주석에도 넣지 않는다)."""
     last = spec.last_essential
     if last < 0:
         raise ValueError("필수 토큰이 없는 형식이에요")
-    out = ["function parse(line,    n, p, i, v, c, t, ty, tm, td) {",
+    out = [f"function {name}(line,    n, p, i, v, c, t, ty, tm, td) {{",
            "  n = length(line)",
            "  p = 1",
            '  P_S = ""']
@@ -430,12 +444,12 @@ def _fill(text: str) -> str:
             .replace("@STATUS@", _STATUS_RE))
 
 
-def awk_program(fmt: str, custom: CustomFormat | None,
-                formats: Sequence[LogFormatDef] = ()) -> str:
-    """형식에 맞는 awk 소스를 돌려준다. 모르는 형식이면 ValueError(FormatError).
+def parse_function(fmt: str, custom: CustomFormat | None,
+                   formats: Sequence[LogFormatDef] = (), name: str = "parse") -> str:
+    """형식 하나의 awk 함수 name(line) 소스. 모르는 형식이면 ValueError(FormatError).
 
-    기본 제공 형식과 사용자 형식(formats)은 compile_format의 FormatSpec에서 parse()를
-    생성하고, "custom"은 v1 필드 번호 파서를 쓴다."""
+    기본 제공 형식과 사용자 형식(formats)은 compile_format의 FormatSpec에서 생성하고,
+    "custom"은 v1 필드 번호 파서를 쓴다. name은 이 모듈이 정한 식별자만 받는다."""
     if fmt == "custom":
         if custom is None:
             raise ValueError("custom 형식에는 사용자 정의 형식이 필요해요")
@@ -445,15 +459,55 @@ def awk_program(fmt: str, custom: CustomFormat | None,
             time_part = _TIME_CLF
         else:
             raise ValueError(f"모르는 시각 형식: {custom.time_format!r}")
-        parse = _fill(_PARSE_CUSTOM.replace("@TIME@", time_part)
-                      .replace("@MF@", _field(custom.method_field))
-                      .replace("@PF@", _field(custom.path_field))
-                      .replace("@SF@", _field(custom.status_field))
-                      .replace("@TF@", _field(custom.time_field)))
-    else:
-        spec = resolve_format(fmt, formats)
-        if not isinstance(spec, FormatSpec):
-            raise ValueError(f"모르는 로그 형식: {fmt!r}")
-        parse = _gen_parse(spec)
-    # parse()는 마지막에 한 번만 끼운다. 끼운 글자는 다시 치환되지 않는다.
-    return _fill(_COMMON).replace("@PARSE@", parse.strip("\n")).strip("\n") + "\n"
+        return _fill(_PARSE_CUSTOM.replace("@TIME@", time_part)
+                     .replace("@MF@", _field(custom.method_field))
+                     .replace("@PF@", _field(custom.path_field))
+                     .replace("@SF@", _field(custom.status_field))
+                     .replace("@TF@", _field(custom.time_field))
+                     .replace("@NAME@", name)).strip("\n")
+    spec = resolve_format(fmt, formats)
+    if not isinstance(spec, FormatSpec):
+        raise ValueError(f"모르는 로그 형식: {fmt!r}")
+    return _gen_parse(spec, name)
+
+
+def _format_key(fmt: str, custom: CustomFormat | None) -> tuple:
+    """같은 함수를 같이 쓸 수 있는 (형식, custom) 묶음. custom은 "custom"일 때만 뜻이 있다."""
+    if fmt != "custom" or custom is None:
+        return (fmt, None)
+    return (fmt, (custom.method_field, custom.path_field, custom.status_field,
+                  custom.time_field, custom.time_format))
+
+
+def awk_program_multi(paths: Sequence[tuple[str, CustomFormat | None]],
+                      formats: Sequence[LogFormatDef] = ()) -> str:
+    """경로마다 형식이 다른 awk 소스. paths[i] = 경로 i+1의 (형식 이름, custom).
+
+    같은 (형식, custom)은 parse_K 하나를 같이 쓴다. pathfn(n)은 표시 줄의 경로 번호
+    문자열 n을 K로 바꾸고 (모르면 0), parse()는 현재 파일의 PK로 parse_K를 부른다
+    (0이면 실패 = parse_fail). 모르는 형식이면 ValueError(FormatError)."""
+    if not paths:
+        raise ValueError("로그 경로를 하나 이상 지정해야 해요")
+    funcs: dict[tuple, int] = {}
+    bodies: list[str] = []
+    pathfn = ["function pathfn(n) {"]
+    for i, (fmt, custom) in enumerate(paths, 1):
+        key = _format_key(fmt, custom)
+        if key not in funcs:
+            funcs[key] = len(funcs) + 1
+            bodies.append(parse_function(fmt, custom, formats, f"parse_{funcs[key]}"))
+        # n은 표시 줄에서 잘라 낸 문자열이라 문자열로 비교한다 ("01", " 1"은 모르는 번호)
+        pathfn.append(f'  if (n == "{i}") return {funcs[key]}')
+    pathfn += ["  return 0", "}"]
+    dispatch = ["function parse(line) {"]
+    dispatch += [f"  if (PK == {k}) return parse_{k}(line)" for k in range(1, len(funcs) + 1)]
+    dispatch += ["  return 0", "}"]
+    parse = "\n\n".join([*bodies, "\n".join(pathfn), "\n".join(dispatch)])
+    # 함수들은 마지막에 한 번만 끼운다. 끼운 글자는 다시 치환되지 않는다.
+    return _fill(_COMMON).replace("@PARSE@", parse).strip("\n") + "\n"
+
+
+def awk_program(fmt: str, custom: CustomFormat | None,
+                formats: Sequence[LogFormatDef] = ()) -> str:
+    """경로가 하나(번호 1)뿐인 awk_program_multi."""
+    return awk_program_multi([(fmt, custom)], formats)
