@@ -53,8 +53,10 @@
   }
 
   function syncLock() {
-    var a = app();
-    if (a && a.syncScanLock) a.syncScanLock();
+    try {
+      var a = app();
+      if (a && a.syncScanLock) a.syncScanLock();
+    } catch (e) { /* 잠금 표시를 못 고쳐도 스캔 흐름은 계속한다 */ }
   }
 
   function elapsedText(ms) {
@@ -79,7 +81,15 @@
     starting = true;
     startingService = service;
     syncLock();
-    return api().missing_secrets(service).then(function (missing) {
+    function release() {
+      starting = false;
+      startingService = null;
+      syncLock();
+    }
+    // Promise.resolve()로 시작해야 api()가 바로 throw해도 (pywebview 준비 전 등) 잠금이 풀린다.
+    return Promise.resolve().then(function () {
+      return api().missing_secrets(service);
+    }).then(function (missing) {
       if (isErr(missing)) { toast(missing.error); return false; }
       if (!missing || !missing.length) return true;
       return askPasswords(service, missing.map(function (m) {
@@ -89,11 +99,7 @@
       if (go) return begin(service, window);
     }).catch(function () {
       toast("스캔을 시작하지 못했어요");
-    }).then(function () {
-      starting = false;
-      startingService = null;
-      syncLock();
-    });
+    }).then(release, release);
   }
 
   function begin(service, window) {
@@ -107,12 +113,19 @@
         startedAt: Date.now(), endedAt: null
       };
       current = s;
-      showPanel(s);
-      api().get_result(service).then(function (r) {
+      try {
+        showPanel(s);
+      } catch (e) {
+        // 패널을 못 그리면 진행을 보여 줄 수 없다: 끝난 것으로 처리해 잠금을 풀고, 서버 쪽 스캔도 취소해 둔다.
+        finish(s, "failed", "스캔 화면을 그리지 못했어요");
+        Promise.resolve().then(function () { return api().cancel_scan(s.id); }).catch(function () { /* 이미 끝났을 수 있다 */ });
+        return;
+      }
+      Promise.resolve().then(function () { return api().get_result(service); }).then(function (r) {
         if (!r || isErr(r)) return;
         (r.servers || []).forEach(function (sv) { s.prev[sv.name] = sv.elapsed_sec; });
         renderPanel(s);
-      }, function () { /* 예상 시간은 없어도 된다 */ });
+      }).catch(function () { /* 예상 시간은 없어도 된다 */ });
       poll(s);
     });
   }
@@ -303,19 +316,23 @@
 
   // ------------------------------------------------------------ 폴링
 
+  // 진행 조회 실패와 응답 처리 중 예외(throw)를 똑같이 폴링 오류로 센다.
+  // 어느 쪽이든 다음 폴링을 잡거나 MAX_POLL_ERRORS에서 끝내야 한다 (안 그러면 스캔 버튼이 계속 잠긴다).
   function poll(s) {
     if (s !== current || s.finished) return;
-    api().get_scan_progress(s.id).then(function (p) {
+    Promise.resolve().then(function () {
+      return api().get_scan_progress(s.id);
+    }).then(function (p) {
       if (s !== current || s.finished) return;
       if (isErr(p)) { finish(s, "failed", p.error); return; }
-      s.pollErrors = 0;
       s.phase = p.phase;
       s.servers = p.servers || {};
       syncPrompt(s, p.hostkey_pending || null);
       if (TERMINAL[p.phase]) { finish(s, p.phase, p.error); return; }
       renderPanel(s);
+      s.pollErrors = 0; // 처리까지 끝난 뒤에만 오류 수를 되돌린다
       s.timer = setTimeout(function () { poll(s); }, POLL_MS);
-    }, function () {
+    }).catch(function () {
       if (s !== current || s.finished) return;
       s.pollErrors += 1;
       if (s.pollErrors >= MAX_POLL_ERRORS) { finish(s, "failed", "진행 상황을 받아 오지 못했어요"); return; }
@@ -329,9 +346,11 @@
     s.endedAt = Date.now();
     clearTimeout(s.timer);
     syncLock();
-    syncPrompt(s, null);
     if (phase === "failed") s.error = error || "스캔하지 못했어요";
-    renderPanel(s);
+    try {
+      syncPrompt(s, null);
+      renderPanel(s);
+    } catch (e) { /* 패널을 못 그려도 잠금은 이미 풀렸고, 결과 새로 고침은 계속한다 */ }
     if (phase !== "done") return;
     app().refresh().catch(function () { toast("결과를 다시 불러오지 못했어요"); });
     api().get_result(s.service).then(function (r) {
