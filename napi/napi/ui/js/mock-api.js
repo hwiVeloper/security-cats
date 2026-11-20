@@ -202,9 +202,9 @@
       sleeping_noted: 0,
       reliability: { level: "low", coverage_days: 363, reasons: ["WAS-03은 로그가 85일치뿐이에요"] },
       servers: [
-        { name: "WAS-01", ok: true, error: null, oldest: "20251120", newest: TODAY, elapsed_sec: 412.3, truncated: false },
-        { name: "WAS-02", ok: true, error: null, oldest: "20251121", newest: TODAY, elapsed_sec: 398.9, truncated: false },
-        { name: "WAS-03", ok: true, error: null, oldest: "20260825", newest: TODAY, elapsed_sec: 121.4, truncated: false }
+        { name: "WAS-01", ok: true, error: null, oldest: "20251120", newest: TODAY, elapsed_sec: 412.3, truncated: false, lines: 18240311, parse_fail: 42 },
+        { name: "WAS-02", ok: true, error: null, oldest: "20251121", newest: TODAY, elapsed_sec: 398.9, truncated: false, lines: 17998102, parse_fail: 0 },
+        { name: "WAS-03", ok: true, error: null, oldest: "20260825", newest: TODAY, elapsed_sec: 121.4, truncated: false, lines: 4120577, parse_fail: 0 }
       ],
       probe_rest: { distinct: 214, count: 1032 }
     }
@@ -404,7 +404,8 @@
       var o = scan.outcomes[sv.name] || { ok: false, error: "취소됨", elapsed: 0 };
       if (!o.ok) reasons.push(sv.name + "에서 로그를 가져오지 못했어요 (" + o.error + ")");
       return { name: sv.name, ok: o.ok, error: o.ok ? null : o.error, oldest: o.ok ? daysBefore(TODAY, 364) : null,
-        newest: o.ok ? TODAY : null, elapsed_sec: o.elapsed, truncated: false };
+        newest: o.ok ? TODAY : null, elapsed_sec: o.elapsed, truncated: false,
+        lines: o.ok ? 1000000 : 0, parse_fail: o.ok ? 17 : 0 };
     });
     r.scanned_at = nowIso();
     r.window = scan.window;

@@ -113,3 +113,11 @@ def test_export_pdf_cleans_temp_dir(monkeypatch, tmp_path):
     assert out.read_bytes().startswith(b"%PDF")
     assert seen["uri"].startswith("file:///") and seen["uri"].endswith("?print=1")
     assert not os.path.exists(os.path.dirname(seen["pdf"]))
+
+
+def test_report_carries_skipped_line_counts():
+    html = report.build_report_html(make_result())  # WAS-01: lines 1200, parse_fail 7
+    line = next(l for l in html.splitlines() if l.lstrip().startswith("var data = "))
+    data = json.loads(line.split("var data = ", 1)[1].rstrip().rstrip(";"))
+    assert [(s["lines"], s["parse_fail"]) for s in data["servers"]] == [(1200, 7), (0, 0)]
+    assert '"건너뛴 줄 "' in html  # render.js가 리포트에 인라인되어 서버 표에 표시한다

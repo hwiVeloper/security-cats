@@ -79,7 +79,7 @@
       if (current) hidePanel();
       var s = {
         id: res.scan_id, service: service, window: window, phase: "spec", servers: {},
-        prev: {}, reasons: {}, error: null, finished: false, cancelling: false,
+        prev: {}, reasons: {}, skipped: {}, error: null, finished: false, cancelling: false,
         answered: {}, prompt: null, timer: null, pollErrors: 0, sig: null, catMode: null
       };
       current = s;
@@ -310,7 +310,11 @@
     app().refresh().catch(function () { toast("결과를 다시 불러오지 못했어요"); });
     api().get_result(s.service).then(function (r) {
       if (!r || isErr(r)) return;
-      (r.servers || []).forEach(function (sv) { if (!sv.ok && sv.error) s.reasons[sv.name] = sv.error; });
+      (r.servers || []).forEach(function (sv) {
+        if (!sv.ok && sv.error) s.reasons[sv.name] = sv.error;
+        var skipped = R.skippedText(sv);
+        if (sv.ok && skipped) s.skipped[sv.name] = skipped;
+      });
       renderPanel(s);
     }, function () { /* 사유는 결과 화면의 신뢰도에서도 보인다 */ });
   }
@@ -358,7 +362,7 @@
 
   function renderPanel(s) {
     if (s !== current || !s.body) return;
-    var sig = JSON.stringify([s.phase, s.servers, s.prev, s.reasons, s.error, s.cancelling, s.finished]);
+    var sig = JSON.stringify([s.phase, s.servers, s.prev, s.reasons, s.skipped, s.error, s.cancelling, s.finished]);
     if (sig === s.sig) return;
     s.sig = sig;
 
@@ -385,7 +389,8 @@
           el("span", { class: "sv-name" }, n),
           el("span", { class: "ph ph-" + ph }, SERVER_PHASE[ph] || ph),
           eta ? el("span", { class: "sv-eta" }, eta) : null,
-          ph === "failed" && s.reasons[n] ? el("span", { class: "sv-reason" }, s.reasons[n]) : null);
+          ph === "failed" && s.reasons[n] ? el("span", { class: "sv-reason" }, s.reasons[n]) : null,
+          s.skipped[n] ? el("span", { class: "sv-skipped" }, s.skipped[n]) : null);
       })));
     }
 

@@ -473,12 +473,20 @@
     return fmtDate(s.oldest) + " ~ " + fmtDate(s.newest);
   }
 
+  /* 형식이 맞지 않아 건너뛴 로그 줄 수. 없으면 null (예전 결과에는 parse_fail이 없다). */
+  function skippedText(s) {
+    var n = Number(s && s.parse_fail);
+    return isFinite(n) && n > 0 ? "건너뛴 줄 " + fmtNum(n) : null;
+  }
+
   /* 서버별 수집 결과 표 (이름, 성공/오류, 로그 기간, 걸린 시간). 리포트 표지에 둔다. */
   function renderServers(result) {
     var servers = result.servers || [];
     var rows = servers.map(function (s) {
+      var skipped = skippedText(s);
       var state = s.ok
-        ? el("td", { class: "c-ok" }, s.truncated ? "성공 (일부 잘림)" : "성공")
+        ? el("td", { class: "c-ok" }, s.truncated ? "성공 (일부 잘림)" : "성공",
+          skipped ? el("span", { class: "sv-skipped" }, " · " + skipped) : null)
         : el("td", { class: "c-err warn" }, "오류" + (s.error ? ": " + s.error : ""));
       var secs = Number(s.elapsed_sec);
       return el("tr", null,
@@ -573,6 +581,7 @@
     fmtDateTime: fmtDateTime,
     fmtNum: fmtNum,
     opKey: opKey,
+    skippedText: skippedText,
     el: el
   };
 })(window);
