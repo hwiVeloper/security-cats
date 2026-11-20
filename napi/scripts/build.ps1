@@ -7,7 +7,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:NAPI_ONEDIR = if ($OneDir) { "1" } else { "0" }
 $env:PYTHONPATH = Join-Path $PSScriptRoot "pyi_shim"  # DRM 암호화 메타데이터 우회 (shim 설명 참고)
 & .venv\Scripts\pyinstaller napi.spec --noconfirm
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패 (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)" }
 
 if ($OneDir) {
     $dir = "dist\napi"
