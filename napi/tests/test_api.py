@@ -1058,3 +1058,25 @@ def test_main_start_failure_shows_generic_message(monkeypatch, main_env, capsys)
     assert boxes == ["napi를 시작하지 못했어요: RuntimeError"]
     assert "boom detail" in capsys.readouterr().err  # traceback은 stderr로
     assert len(shutdowns) == 1
+
+
+# pywebview는 Python 매개변수 이름을 그대로 써서 JS 함수를 만든다 (new Function(params, body)).
+# 이름이 JS 전역(window 등)과 같으면 생성된 함수 본문의 window.pywebview 호출이 깨져
+# 버튼을 눌러도 아무 일도 일어나지 않는다 (실행될 명령 보기 / 스캔 버그).
+_JS_UNSAFE_PARAM_NAMES = {"window", "document", "pywebview", "arguments", "Promise", "Array",
+                          "Math", "JSON", "Object", "String", "undefined", "eval", "self",
+                          "globalThis", "navigator", "location", "console"}
+
+
+def test_js_safe_param_names():
+    import inspect
+    from napi.api import Api
+    bad = {}
+    for name in dir(Api):
+        if name.startswith("_") or not callable(getattr(Api, name)):
+            continue
+        params = inspect.getfullargspec(getattr(Api, name)).args[1:]  # self 제외
+        hit = [p for p in params if p in _JS_UNSAFE_PARAM_NAMES]
+        if hit:
+            bad[name] = hit
+    assert bad == {}

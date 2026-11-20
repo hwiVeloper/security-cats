@@ -259,8 +259,8 @@ class Api:
         return _test_format(pattern, line)
 
     @_safe
-    def preview_commands(self, service: str, window: str) -> dict:
-        window = _window(window)
+    def preview_commands(self, service: str, period: str) -> dict:
+        window = _window(period)  # 매개변수를 window로 지으면 안 된다 (start_scan 주석 참고)
         cfg = self._load()
         svc = self._service(cfg, service)
         since, _ = window_bounds(window, self._today())
@@ -334,8 +334,10 @@ class Api:
     # ------------------------------------------------------------------- scan
 
     @_safe
-    def start_scan(self, service: str, window: str) -> dict:
-        window = _window(window)
+    def start_scan(self, service: str, period: str) -> dict:
+        # 매개변수 이름은 pywebview가 JS 함수 인자 이름으로 그대로 쓴다. "window"로 지으면
+        # 생성된 JS 함수 안의 전역 window를 가려서 호출 자체가 실패한다 (test_js_safe_param_names).
+        window = _window(period)
         cfg = self._load()
         svc = self._service(cfg, service)
         with self._lock:
