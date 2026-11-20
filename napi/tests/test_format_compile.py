@@ -474,3 +474,35 @@ def test_tab_in_pattern_is_allowed():
     spec = compile_format('%t\t"%r"\t%s')
     assert parse_with_spec('[18/Nov/2026:10:00:01 +0900]\t"GET /a HTTP/1.1"\t200', spec) == \
         ParsedLine("GET", "/a", 200, "20261118")
+
+
+# ---- 최종 리뷰 C1: %U 값은 첫 [ \t] 토큰만 경로로 쓴다 (꼬리 원문이 새지 않게) ----
+
+COMBINED_TAIL = ' HTTP/1.1" 200 512 "https://ref.example/secret?k=1" "Mozilla/5.0 (X11)"'
+
+
+def test_trailing_U_takes_first_token_only():
+    spec = compile_format('%t %m %U')
+    line = '[18/Nov/2026:10:00:01 +0900] GET /v1/a?x=1' + COMBINED_TAIL
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/v1/a?x=1", None, "20261118")
+
+
+def test_quoted_U_with_tab_takes_first_token_only():
+    spec = compile_format('%t %m "%U" %s')
+    line = '[18/Nov/2026:10:00:01 +0900] GET "/v1/a\tleak me" 200'
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/v1/a", 200, "20261118")
+    line = '[18/Nov/2026:10:00:01 +0900] GET " \t/v1/b  x" 200'  # 앞 공백은 건너뛴다
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/v1/b", 200, "20261118")
+
+
+@pytest.mark.parametrize("line", [
+    '[18/Nov/2026:10:00:01 +0900] GET "" 200',
+    '[18/Nov/2026:10:00:01 +0900] GET " \t " 200',
+])
+def test_U_without_token_fails(line):
+    assert parse_with_spec(line, compile_format('%t %m "%U" %s')) is None
+
+
+def test_trailing_U_without_token_fails():
+    spec = compile_format('%t %m %U')
+    assert parse_with_spec('[18/Nov/2026:10:00:01 +0900] GET \t ', spec) is None

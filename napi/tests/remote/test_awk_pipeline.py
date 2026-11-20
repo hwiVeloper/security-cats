@@ -827,6 +827,42 @@ def test_pipeline_parity_raw_bytes_and_crlf(bash, tmp_path):
         assert any(x.startswith(b"R\t") for x in out)
 
 
+# ---- 최종 리뷰 C1: %U는 첫 토큰만 (꼬리 원문이 서버 밖으로 나가지 않는다) ----
+
+U_TAIL = ' HTTP/1.1" 200 512 "https://ref.example/leak?k=1" "Mozilla/5.0 (X11; secret)"'
+
+
+@pytest.mark.parametrize("pattern,lines", [
+    ("%t %m %U", [
+        "[18/Nov/2026:10:00:01 +0900] GET /v1/a?x=1" + U_TAIL,
+        "[18/Nov/2026:10:00:02 +0900] POST /v1/b\t\tleak\tmore",
+        "[18/Nov/2026:10:00:03 +0900] GET /v1/c",
+        "[18/Nov/2026:10:00:04 +0900] GET ",
+        "[18/Nov/2026:10:00:05 +0900] GET \t \t"]),
+    ('%t %m "%U" %s', [
+        '[18/Nov/2026:10:00:01 +0900] GET "/v1/a\tleak me" 200',
+        '[18/Nov/2026:10:00:02 +0900] GET " \t/v1/b  leak" 404',
+        '[18/Nov/2026:10:00:03 +0900] GET "" 200',
+        '[18/Nov/2026:10:00:04 +0900] GET " \t " 200',
+        '[18/Nov/2026:10:00:05 +0900] GET "/v1/c" 201']),
+    ("%{%d/%b/%Y}t|%m|%U|%s", [
+        "18/Nov/2026|GET|/a leak|200", "18/Nov/2026|GET||201", "18/Nov/2026|GET| \t|201",
+        "18/Nov/2026|GET|/d|200"]),
+])
+def test_pipeline_parity_U_first_token(bash, tmp_path, pattern, lines):
+    d = tmp_path.resolve()
+    fmts = [LogFormatDef("u", pattern)]
+    files = write_log(d, "app.log", ("\n".join(lines) + "\n").encode("utf-8"))
+    out = parity(bash, server_for(d, "app.log", "u"), files, "u", fmts)
+    (stat,) = f_lines(out)
+    assert 0 < int(stat[5]) < len(lines)  # 성공과 실패가 모두 있다
+    rows = [x for x in out if x.startswith((b"R\t", b"P\t"))]
+    assert rows and all(len(x.split(b"\t")) in (6, 7) for x in rows)
+    blob = b"\n".join(b"F" if x.startswith(b"F\t") else x for x in out)
+    for secret in (b"leak", b"HTTP", b"Mozilla", b"ref.example", b"secret", b"more", b"512"):
+        assert secret not in blob, secret
+
+
 # ---- Task 3: 로그 경로 여러 개 ----
 
 def test_pipeline_multiple_globs(bash, tmp_path):

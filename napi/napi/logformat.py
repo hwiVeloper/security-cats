@@ -57,7 +57,10 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   time_layout이 비어 있으면 날짜를 정하지 않는다(폭만 검사).
 - r: 값의 앞뒤 space/tab을 지우고 [ \t]+로 나눈다. 토큰이 2개 이상이고 첫 토큰이 ^[A-Z]+$이어야 한다.
   method = 첫 토큰, path = 둘째 토큰.
-- m: 값이 ^[A-Z]+$이어야 한다. method = 값.  U: path = 값 그대로.
+- m: 값이 ^[A-Z]+$이어야 한다. method = 값.
+- U: 값의 앞뒤 space/tab을 지우고 [ \t]+로 나눈 첫 토큰이 path다. 토큰이 없으면(빈 값,
+  공백뿐) 실패. (%U가 마지막 토큰이거나 드문 리터럴 앞이면 값이 줄 끝까지 늘어나므로,
+  꼬리의 referer/UA 같은 원문이나 탭이 경로로 나가지 않게 첫 토큰만 쓴다.)
 - s: 값이 ^[0-9][0-9][0-9]$이어야 한다. status = 값. 형식에 s가 없으면 status는 없음(None, awk는 "").
 - 그 밖의 field(h l u q H b B D T i o skip): 값을 버린다.
 - 같은 종류의 값을 정하는 field가 여러 번 나오면 나중 것이 이긴다.
@@ -428,7 +431,10 @@ def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
                 return None
             method = value
         elif d == "U":
-            path = value
+            parts = _tokens(value)  # 첫 토큰만: 꼬리 원문(referer, UA 등)이 경로로 새지 않게
+            if not parts:
+                return None
+            path = parts[0]
         elif d == "s":
             if not _STATUS_RE.fullmatch(value):
                 return None

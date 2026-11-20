@@ -391,8 +391,8 @@ def _gen_token(tok: Token, nxt: Token | None) -> list[str]:
                  "  P_U = t[2]"]
     elif d == "m":
         code += ["  if (v !~ /^[A-Z]+$/) return 0", "  P_M = v"]
-    elif d == "U":
-        code.append("  P_U = v")
+    elif d == "U":  # 첫 토큰만 (꼬리 원문이 경로로 새지 않게)
+        code += ["  if (ntok(v, t) < 1) return 0", "  P_U = t[1]"]
     elif d == "s":
         code += [f"  if (v !~ /{_STATUS_RE}/) return 0", "  P_S = v"]
     return code

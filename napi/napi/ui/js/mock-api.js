@@ -445,7 +445,9 @@
         if (!/^[A-Z]+$/.test(value)) return null;
         method = value;
       } else if (t.d === "U") {
-        path = value;
+        var up = value.trim().split(/[ \t]+/);  // 첫 토큰만
+        if (!up[0]) return null;
+        path = up[0];
       } else if (t.d === "s") {
         if (!/^[0-9]{3}$/.test(value)) return null;
         status = +value;
