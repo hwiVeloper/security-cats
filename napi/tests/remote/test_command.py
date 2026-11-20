@@ -182,3 +182,10 @@ def test_command_rejects_non_integer_settings():
         build_pipeline(make_server(), Settings(max_rows="1; rm -rf /"), None, TOKEN)
     with pytest.raises(ValueError):
         build_remote_command(make_server(), Settings(remote_timeout_sec=-1), None, TOKEN)
+
+
+def test_command_rejects_zero_max_rows():
+    """MAXKEYS = 4 × max_rows이므로 max_rows=0이면 어떤 키도 셀 수 없다."""
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(), Settings(max_rows=0), None, TOKEN)
+    assert "MAXKEYS=4 " in build_pipeline(make_server(), Settings(max_rows=1), None, TOKEN)

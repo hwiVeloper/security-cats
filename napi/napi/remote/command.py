@@ -71,7 +71,7 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
     """
     _check_token(token)
     _check_since(since)
-    max_rows = _int("max_rows", settings.max_rows, 0)
+    max_rows = _int("max_rows", settings.max_rows, 1)  # MAXKEYS = 4 × max_rows ≥ 4
     top_404 = _int("top_404", settings.top_404, 0)
     program = awk_program(server.log_format, server.custom_format)
     directory, pattern = split_glob(server.log_glob)
