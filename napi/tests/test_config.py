@@ -6,7 +6,7 @@ import pytest
 
 from napi.config import ConfigError, load_config, save_config, validate_config
 from napi.models import (
-    AppConfig, CustomFormat, Note, ServerConfig, ServerScanResult, FileStat,
+    AppConfig, CustomFormat, LogFormatDef, Note, ServerConfig, ServerScanResult, FileStat,
     ServiceConfig, SpecSource,
 )
 
@@ -230,3 +230,63 @@ def test_save_config_is_atomic(tmp_path, monkeypatch):
         save_config(AppConfig(services=[]), p)
     assert p.read_text(encoding="utf-8") == before
     assert [f.name for f in tmp_path.iterdir()] == ["c.yaml"]  # 임시 파일이 남지 않는다
+
+
+USER_FORMATS = [
+    LogFormatDef("webtob_error_req", '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] "%r" %s'),
+    LogFormatDef("method_u", "%{%d/%b/%Y:%H:%M:%S}t %m %U ?%q %s"),
+]
+
+
+def test_log_formats_roundtrip(tmp_path):
+    p = tmp_path / "c.yaml"
+    svc = make_service()
+    svc.servers[0].log_format = "webtob_error_req"
+    cfg = AppConfig(services=[svc], log_formats=list(USER_FORMATS))
+    save_config(cfg, p)
+    loaded = load_config(p)
+    assert loaded == cfg
+    assert loaded.log_formats == USER_FORMATS
+    assert validate_config(loaded) == []
+
+
+def test_log_formats_default_empty(tmp_path):
+    p = _write(tmp_path, "services: []\n")
+    assert load_config(p).log_formats == []
+
+
+@pytest.mark.parametrize("body", [
+    "log_formats: abc\nservices: []\n",
+    "log_formats: [abc]\nservices: []\n",
+    "log_formats: [{name: a}]\nservices: []\n",
+    "log_formats: [{name: a, pattern: b, extra: c}]\nservices: []\n",
+])
+def test_bad_log_formats_raise_config_error(tmp_path, body):
+    with pytest.raises(ConfigError, match="설정 파일"):
+        load_config(_write(tmp_path, body))
+
+
+def test_log_formats_scalars_become_strings(tmp_path):
+    p = _write(tmp_path, "log_formats: [{name: 2024, pattern: '%t \"%r\"'}]\nservices: []\n")
+    assert load_config(p).log_formats == [LogFormatDef("2024", '%t "%r"')]
+
+
+def test_validate_log_formats():
+    def errs(formats, server_format="webtob"):
+        svc = make_service()
+        svc.servers[0].log_format = server_format
+        return validate_config(AppConfig(services=[svc], log_formats=formats))
+
+    assert errs(list(USER_FORMATS), "method_u") == []
+    assert any("기본 제공 형식 이름" in m
+               for m in errs([LogFormatDef("webtob", '%t "%r"')]))
+    assert any("기본 제공 형식 이름" in m
+               for m in errs([LogFormatDef("custom", '%t "%r"')]))
+    assert any("중복" in m for m in errs([USER_FORMATS[0], USER_FORMATS[0]]))
+    bad = errs([LogFormatDef("broken", "%h%l %t \"%r\"")])
+    assert any("broken" in m and "구분 문자" in m for m in bad)
+    assert any("형식 이름" in m for m in errs([LogFormatDef(" ", '%t "%r"')]))
+    unknown = errs(list(USER_FORMATS), "nope")
+    assert any("모르는 로그 형식" in m and "nope" in m for m in unknown)
+    # 기본 제공 형식과 custom(+필드 번호)은 사용자 형식 없이도 알려진 이름이다
+    assert errs([], "webtob_combined") == []

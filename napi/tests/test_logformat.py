@@ -21,7 +21,8 @@ def test_presets_display_names():
         "apache_combined": "Apache (combined)",
         "nginx_combined": "nginx (combined)",
         "webtob": "WebtoB",
-        "custom": "직접 지정",
+        "webtob_combined": "WebtoB (combined)",
+        "custom": "직접 지정 (필드 번호)",
     }
 
 
@@ -139,8 +140,8 @@ def test_sample_line_ok():
     res = run_sample_line(line, "webtob", None)
     assert res == {
         "ok": True, "method": "GET", "path": "/v1/users/123?token=abc",
-        "normalized": "/v1/users/{*}", "status": 200, "date": "20261118",
-        "error": None,
+        "normalized": "/v1/users/{*}", "status": 200, "status_class": "2xx",
+        "date": "20261118", "error": None,
     }
 
 

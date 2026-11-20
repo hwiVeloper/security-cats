@@ -10,8 +10,9 @@ from pathlib import Path
 
 import yaml
 
+from .logformat import BUILTIN_FORMATS, FormatError, compile_format
 from .models import (
-    AppConfig, CustomFormat, Note, PathMapping, ServerConfig, ServiceConfig,
+    AppConfig, CustomFormat, LogFormatDef, Note, PathMapping, ServerConfig, ServiceConfig,
     Settings, SpecSource, Thresholds,
 )
 
@@ -69,6 +70,14 @@ _SERVER_STRS = ("name", "host", "user", "log_glob", "auth", "log_format")
 _SETTINGS_INTS = ("max_parallel_servers", "remote_timeout_sec", "max_rows", "top_404")
 
 
+def _log_formats(items) -> list[LogFormatDef]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: log_formats는 목록이어야 합니다: {items!r}")
+    return [LogFormatDef(**_fields(f, strs=("name", "pattern"))) for f in items]
+
+
 def _from_dict(d: dict) -> AppConfig:
     if not isinstance(d, dict):
         raise ConfigError("설정 파일 형식이 올바르지 않습니다. (최상위가 매핑이 아님)")
@@ -98,6 +107,7 @@ def _from_dict(d: dict) -> AppConfig:
             settings=Settings(**_fields(d.get("settings"), ints=_SETTINGS_INTS,
                                         strs=("default_window",))),
             version=d.get("version", 1),
+            log_formats=_log_formats(d.get("log_formats")),
         )
     except (TypeError, KeyError, AttributeError) as e:
         raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: {e}") from e
@@ -146,11 +156,32 @@ def _below(value, minimum: int) -> bool:
 _SETTINGS_MIN = {"max_parallel_servers": 1, "remote_timeout_sec": 1, "max_rows": 1, "top_404": 0}
 
 
+def _validate_log_formats(formats: list[LogFormatDef]) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for f in formats:
+        label = f"로그 형식 '{f.name}'"
+        if not f.name.strip():
+            errors.append("로그 형식 이름이 비어 있습니다.")
+        elif f.name in BUILTIN_FORMATS or f.name == "custom":
+            errors.append(f"{label}: 기본 제공 형식 이름과 같아서 쓸 수 없습니다.")
+        elif f.name in seen:
+            errors.append(f"{label}: 형식 이름이 중복되었습니다.")
+        seen.add(f.name)
+        try:
+            compile_format(f.pattern)
+        except FormatError as e:
+            errors.append(f"{label}: {e}")
+    return errors
+
+
 def validate_config(cfg: AppConfig) -> list[str]:
     errors: list[str] = []
     for name, minimum in _SETTINGS_MIN.items():
         if _below(getattr(cfg.settings, name), minimum):
             errors.append(f"설정 {name}은(는) {minimum} 이상의 정수여야 합니다.")
+    errors += _validate_log_formats(cfg.log_formats)
+    known_formats = {*BUILTIN_FORMATS, "custom", *(f.name for f in cfg.log_formats)}
     seen: set[str] = set()
     for svc in cfg.services:
         label = f"서비스 '{svc.name}'"
@@ -170,6 +201,8 @@ def validate_config(cfg: AppConfig) -> list[str]:
                 errors.append(f"{sl}: 포트는 1~65535 사이의 정수여야 합니다.")
             if sv.auth == "key" and not sv.key_file:
                 errors.append(f"{sl}: 키 인증인데 키 파일이 지정되지 않았습니다.")
+            if sv.log_format not in known_formats:
+                errors.append(f"{sl}: 모르는 로그 형식이에요: {sv.log_format}")
             if sv.log_format == "custom" and sv.custom_format is None:
                 errors.append(f"{sl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
             if not sv.log_glob.startswith("/"):

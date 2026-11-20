@@ -36,6 +36,13 @@ class CustomFormat:
 
 
 @dataclass
+class LogFormatDef:
+    """사용자 정의 로그 형식. pattern은 Apache LogFormat 문법."""
+    name: str
+    pattern: str
+
+
+@dataclass
 class ServerConfig:
     name: str
     host: str
@@ -80,6 +87,7 @@ class AppConfig:
     services: list[ServiceConfig]
     settings: Settings = field(default_factory=Settings)
     version: int = 1
+    log_formats: list[LogFormatDef] = field(default_factory=list)
 
 
 @dataclass
