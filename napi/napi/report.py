@@ -22,6 +22,7 @@ class ReportError(Exception):
 def _embed_json(data: dict) -> str:
     text = json.dumps(data, ensure_ascii=False)
     return (text.replace("</", "<\\/")
+                .replace("<!--", "<\\u0021--")
                 .replace(chr(0x2028), "\\u2028")
                 .replace(chr(0x2029), "\\u2029"))
 

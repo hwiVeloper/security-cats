@@ -501,9 +501,20 @@
         reasons.map(function (t) { return el("li", null, t); })) : null);
   }
 
+  /* 상태별 건수는 result.counts 대신 apis 목록에서 직접 센다 (섹션이 조용히 빠지지 않게). */
+  function withDerivedCounts(result) {
+    var counts = {};
+    (result.apis || []).forEach(function (a) { counts[a.status] = (counts[a.status] || 0) + 1; });
+    var copy = {};
+    Object.keys(result).forEach(function (k) { copy[k] = result[k]; });
+    copy.counts = counts;
+    return copy;
+  }
+
   function renderReport(rootEl, result, opts) {
     opts = opts || {};
     var print = !!opts.print;
+    result = withDerivedCounts(result || {});
     root.NapiCat.ensureDefs(rootEl.ownerDocument);
     clear(rootEl);
     rootEl.classList.add("napi-report");

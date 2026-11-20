@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import os
 import re
 import subprocess
@@ -28,6 +29,26 @@ def test_report_embeds_data_safely():
     assert html.count("</script>") == harmless.count("</script>")
     assert "<\\/script>" in html
     assert "\u2028" not in html
+
+
+def test_report_neutralises_comment_open():
+    harmless = report.build_report_html(make_result())
+    r = make_result()
+    evil = dataclasses.replace(r.apis[0], path="<!--<script>")
+    html = report.build_report_html(dataclasses.replace(r, apis=[evil, *r.apis[1:]]))
+    assert html.count("</script>") == harmless.count("</script>")
+    assert html.count("<!--") == harmless.count("<!--")
+    assert "<\\u0021--<script>" in html
+
+
+def test_report_data_roundtrips_verbatim():
+    r = make_result()
+    nasty = ('/*NAPI_JS*/ "__NAPI_DATA__" $1 ' + chr(92) + '1 ' + chr(92) + ' ' + chr(92) + 'n </x> <!--'
+             + chr(0x2028))
+    html = report.build_report_html(dataclasses.replace(r, summary=nasty))
+    line = next(l for l in html.splitlines() if l.lstrip().startswith("var data = "))
+    block = line.split("var data = ", 1)[1].rstrip().rstrip(";")
+    assert json.loads(block)["summary"] == nasty
 
 
 def test_report_contains_summary_and_title():

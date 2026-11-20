@@ -178,7 +178,10 @@ table{border-collapse:collapse}
   .api-table{width:100%}
   .api-table tr,.server-table tr{break-inside:avoid;page-break-inside:avoid}
   .api-table thead,.server-table thead{display:table-header-group}
-  .anim .z{opacity:1}
+  .anim .z{opacity:1;transform:none}
+  .anim .z1{transform:translate(0,0)}
+  .anim .z2{transform:translate(6px,-4px)}
+  .anim .z3{transform:translate(10px,-8px)}
 }
 
 /* ===== 냅냥 animation (시안 v3) ===== */
