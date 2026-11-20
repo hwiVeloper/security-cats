@@ -90,3 +90,11 @@ def test_split_on_newline_only_and_crlf_free():
     out = "F\t/a\u2028b\r.log\t20250101\t20250101\t1\t0\t0\nD\tdone\n"
     r = parse_remote_output("s", out, "", 0, 0.0)
     assert r.ok and r.files[0].path == "/a\u2028b\r.log"
+
+
+def test_protocol_glob_empty():
+    out = "E\tglob_empty\t/x/b*\nF\t/a/x.log\t20261101\t20261118\t3\t0\t0\nQ\t0\t0\nD\tdone\n"
+    r = parse_remote_output("s", out, "", 0, 0.0)
+    assert r.ok
+    assert r.file_errors == [("glob_empty", "/x/b*")]
+    assert len(r.files) == 1

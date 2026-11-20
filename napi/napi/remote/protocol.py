@@ -5,6 +5,8 @@ from napi.models import AggRow, FileStat, ServerScanResult
 
 _BAD_FORMAT = "집계 결과 형식이 올바르지 않아요"
 _STDERR_LIMIT = 200
+# E 줄 중 세 번째 칸에 경로(glob_empty는 비어 있던 glob)를 담는 코드
+_PATH_ERRORS = ("unreadable", "decompress_failed", "glob_empty")
 
 
 def _date(s: str) -> str | None:
@@ -53,7 +55,7 @@ def parse_remote_output(server: str, stdout: str, stderr: str,
                     pass
                 elif msg == "bad marker":
                     bad_marker = True
-                elif msg in ("unreadable", "decompress_failed") and len(parts) == 3:
+                elif msg in _PATH_ERRORS and len(parts) == 3:
                     res.file_errors.append((msg, parts[2]))
                 else:
                     res.file_errors.append((msg, ""))

@@ -13,6 +13,9 @@ P_S가 ""이면(상태 없는 형식) 상태군은 "???"이고 404가 아닌 것
 
 입력: 셸 루프가 파일마다 "\\n\\001F<MARK>\\t<경로>" 표시 줄을 먼저 내고 파일 내용을
 이어 붙인다. 읽을 수 없는 파일과 압축 해제 실패는 "\\n\\001E<MARK>\\t<코드>\\t<경로>"로 알린다.
+파일이 하나도 없는 glob은 파일 목록보다 먼저 "\\n\\001E<MARK>\\tglob_empty\\t<glob>"으로 알린다.
+glob_empty는 파일로도 오류로도 세지 않는다. 파일(읽지 못한 파일 포함)이 하나도 없으면
+"E\\tno files matched"만 내고 glob_empty 줄은 내지 않는다 (v1과 같은 출력).
 MARK는 스캔마다 다른 취소 토큰이고, 표시 줄은 줄 전체가 맨 앞부터 일치할 때만 인정한다
 (로그 내용으로 표시 줄을 위조할 수 없다). 표시 앞의 "\\n"은 마지막 줄에 개행이 없는 파일과
 표시가 붙지 않게 하려는 것이다. 그래서 표시 바로 앞의 빈 줄 하나는 세지 않는다.
@@ -50,6 +53,7 @@ BEGIN {
   MLEN = length(FMARK)
   nfiles = 0
   nerr = 0
+  nempty = 0
   nkeys = 0
   overflow = 0
   pend = 0
@@ -128,14 +132,21 @@ function newfile(p) {
   cur = nfiles
 }
 
-# s = "<코드>\t<경로>". 코드는 셸 루프가 정한 것만 받는다.
-function fileerr(s,    i, code) {
+# s = "<코드>\t<경로>". 코드는 셸이 정한 것만 받는다.
+# glob_empty(<경로> = 비어 있던 glob)는 파일 오류가 아니라서 nerr에 세지 않는다.
+function fileerr(s,    i, code, msg) {
   i = index(s, "\t")
   if (i == 0) return
   code = substr(s, 1, i - 1)
+  msg = "E\t" code "\t" clean(substr(s, i + 1))
+  if (code == "glob_empty") {
+    nempty++
+    empties[nempty] = msg
+    return
+  }
   if (code != "unreadable" && code != "decompress_failed") return
   nerr++
-  errs[nerr] = "E\t" code "\t" clean(substr(s, i + 1))
+  errs[nerr] = msg
 }
 
 # 표시 줄 앞에서 미뤄 둔 빈 줄을 처리한다. 첫 빈 줄은 셸이 넣은 "\n"이라 세지 않는다.
@@ -203,7 +214,9 @@ function aggline(tag, k,    i, n, s) {
 END {
   if (badmark) { print "E\tbad marker"; exit }
   flushpend()
+  # 파일이 하나도 없으면(읽지 못한 파일도 없으면) 어느 glob이 비었는지는 내지 않는다
   if (nfiles == 0 && nerr == 0) print "E\tno files matched"
+  else for (i = 1; i <= nempty; i++) print empties[i]
   for (i = 1; i <= nerr; i++) print errs[i]
   for (i = 1; i <= nfiles; i++) {
     lo = fmin[i]

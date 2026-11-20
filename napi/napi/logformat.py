@@ -112,6 +112,8 @@ _ERROR_REQUIRED = "API 호출을 셀 수 없는 형식이에요 (요청/시각 �
 _ERROR_BAD_CHAR = "형식에 쓸 수 없는 문자가 있어요"
 _ERROR_BARE_REQUEST = '%r은 따옴표로 감싸 주세요 (예: "%r")'
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
+# 탭을 뺀 C0 제어 문자(NUL 포함). 로그 한 줄에 들어갈 수 없거나 화면에 보이지 않는다 (R7)
+_CONTROL_RE = re.compile("[\x00-\x08\x0a-\x1f]")
 
 
 class FormatError(ValueError):
@@ -201,7 +203,8 @@ def _literal_tokens(text: str) -> list[Token]:
 
 def compile_format(pattern: str) -> FormatSpec:
     """Apache LogFormat 문자열을 토큰 목록으로 바꾼다. 잘못되면 FormatError."""
-    if _SURROGATE_RE.search(pattern):  # 짝 없는 서로게이트는 UTF-8(awk 소스)로 옮길 수 없다
+    # 짝 없는 서로게이트는 UTF-8(awk 소스)로 옮길 수 없다. 제어 문자는 R7.
+    if _SURROGATE_RE.search(pattern) or _CONTROL_RE.search(pattern):
         raise FormatError(_ERROR_BAD_CHAR)
     tokens: list[Token] = []
     lit: list[str] = []

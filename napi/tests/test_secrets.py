@@ -3,7 +3,7 @@ from napi.secrets import SessionSecrets
 
 
 def make_server(name, host, auth="password", key_file=None):
-    return ServerConfig(name=name, host=host, user="app", log_glob="/log/access.log*",
+    return ServerConfig(name=name, host=host, user="app", log_globs=["/log/access.log*"],
                         auth=auth, key_file=key_file)
 
 

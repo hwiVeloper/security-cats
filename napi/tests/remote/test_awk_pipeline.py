@@ -9,11 +9,12 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from napi.logformat import normalize_path, parse_line, status_class
+from napi.logformat import FormatError, normalize_path, parse_line, status_class
 from napi.models import CustomFormat, LogFormatDef, ServerConfig, Settings
 from napi.remote.awk_program import awk_program
 from napi.remote.command import build_pipeline, build_remote_command
@@ -73,8 +74,11 @@ def posix(path: Path) -> str:
 
 
 def server_for(directory: Path, pattern: str, fmt: str, custom=None) -> ServerConfig:
-    return ServerConfig(name="t", host="h", user="u",
-                        log_glob=posix(directory) + "/" + pattern,
+    return server_globs([posix(directory) + "/" + pattern], fmt, custom)
+
+
+def server_globs(globs: list[str], fmt: str, custom=None) -> ServerConfig:
+    return ServerConfig(name="t", host="h", user="u", log_globs=globs,
                         log_format=fmt, custom_format=custom)
 
 
@@ -87,9 +91,25 @@ def linux_like(script: str) -> str:
     return script
 
 
+def bash_c(bash, script: str, *args: str, cwd=None) -> subprocess.CompletedProcess:
+    """bash -c <script> <args...>. Windows에서 네이티브 프로세스가 MSYS bash에 넘기는
+    인자는 약 8 KB에서 잘리므로(테스트 환경만의 한계, Linux는 128 KiB) 스크립트를 임시 파일에
+    쓰고 bash -c '. <파일>' <args...>로 돌린다. source는 $0(토큰)을 바꾸지 않는다."""
+    if sys.platform != "win32":
+        return subprocess.run([bash, "-c", script, *args], capture_output=True,
+                              timeout=120, cwd=cwd)
+    fd, name = tempfile.mkstemp(suffix=".sh")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(script.encode("utf-8", "surrogateescape"))
+        return subprocess.run([bash, "-c", ". " + shlex.quote(posix(Path(name).resolve())),
+                               *args], capture_output=True, timeout=120, cwd=cwd)
+    finally:
+        os.unlink(name)
+
+
 def run_script(bash, script: str, cwd=None) -> list[bytes]:
-    r = subprocess.run([bash, "-c", linux_like(script), TOKEN], capture_output=True,
-                       timeout=120, cwd=cwd)
+    r = bash_c(bash, linux_like(script), TOKEN, cwd=cwd)
     assert r.returncode == 0, r.stderr
     assert r.stdout.endswith(b"\n")
     return r.stdout[:-1].split(b"\n")
@@ -431,7 +451,7 @@ def test_full_remote_command_runs_locally(bash, logdir):
         pytest.skip("timeout/nice/sh 없음")
     server = server_for(logdir, FORMATS["webtob"] + "*", "webtob")
     cmd = build_remote_command(server, Settings(), None, TOKEN)
-    r = subprocess.run([bash, "-c", linux_like(cmd)], capture_output=True, timeout=120)
+    r = bash_c(bash, linux_like(cmd))
     assert r.returncode == 0, r.stderr
     assert r.stdout[:-1].split(b"\n") == run_pipeline(bash, server)
 
@@ -673,9 +693,9 @@ def test_pipeline_no_status_format(bash, tmp_path):
 
 
 # 리터럴에 " \ } ' 제어 문자, 한글, system("...")이 든 패턴 (필수 조건은 충족)
-INJECT_TAIL = '\\"};system("touch pwned");{"\\ \'x\' \x01한'
+INJECT_TAIL = '\\"};system("touch pwned");{"\\ \'x\' 한'
 INJECT_A = '%t "%r" ' + INJECT_TAIL + ' %s %{a"b\\c}i'
-# 리터럴의 개행으로 awk 문장을 끊으려는 패턴
+# 리터럴의 개행으로 awk 문장을 끊으려는 패턴 (R7: 제어 문자라 컴파일에서 거부된다)
 INJECT_B = '%t "%r"\n}\nBEGIN { system("touch pwned2") }\n# %s'
 
 
@@ -686,17 +706,18 @@ def _strip_awk_strings(prog: str) -> str:
 def test_pattern_cannot_inject_awk(bash, tmp_path):
     d = tmp_path.resolve()
     fmts = [LogFormatDef("inj", INJECT_A), LogFormatDef("inj2", INJECT_B)]
-    for name in ("inj", "inj2"):
-        prog = awk_program(name, None, fmts)
-        start = prog.index("function parse(")
-        parse_fn = prog[start:prog.index("\n}\n", start)]
-        assert parse_fn.isascii()  # 한글, 제어 문자, 개행은 \ooo로 들어간다
-        assert ("\\012" if name == "inj2" else "\\001\\355\\225\\234") in parse_fn
-        code = _strip_awk_strings(parse_fn)  # 문자열 리터럴을 지우면 패턴 글자는 남지 않는다
-        for word in ("system", "pwned", "touch", "BEGIN", "a\"b", "#", "}\n"):
-            assert word not in code, (name, word)
-        whole = _strip_awk_strings(prog)
-        assert "system" not in whole and whole.count("BEGIN") == 1
+    prog = awk_program("inj", None, fmts)
+    start = prog.index("function parse(")
+    parse_fn = prog[start:prog.index("\n}\n", start)]
+    assert parse_fn.isascii()  # 한글은 \ooo로 들어간다 (제어 문자는 _awk_str 테스트)
+    assert "\\355\\225\\234" in parse_fn
+    code = _strip_awk_strings(parse_fn)  # 문자열 리터럴을 지우면 패턴 글자는 남지 않는다
+    for word in ("system", "pwned", "touch", "BEGIN", "a\"b", "#", "}\n"):
+        assert word not in code, word
+    whole = _strip_awk_strings(prog)
+    assert "system" not in whole and whole.count("BEGIN") == 1
+    with pytest.raises(FormatError, match="^형식에 쓸 수 없는 문자가 있어요$"):
+        awk_program("inj2", None, fmts)
 
     lines = [
         '[18/Nov/2026:10:00:01 +0900] "GET /v1/a HTTP/1.1" ' + INJECT_TAIL + ' 200 z',
@@ -715,9 +736,6 @@ def test_pattern_cannot_inject_awk(bash, tmp_path):
         b"R\tGET\t/v1/a\t4xx\t1\t20261118\t20261118",
         b"R\tGET\t/v1/b\t5xx\t1\t20261118\t20261118",
     ]
-    out2 = parity(bash, server_for(d, "app.log", "inj2"), files, "inj2", fmts, cwd=d)
-    assert f_lines(out2)[0][5] == b"6"  # 줄에는 \n이 없으므로 모두 실패
-    assert out2[-1] == b"D\tdone"
     assert not list(d.glob("pwned*"))
     assert not list(Path.cwd().glob("pwned*"))
 
@@ -807,3 +825,82 @@ def test_pipeline_parity_raw_bytes_and_crlf(bash, tmp_path):
     for name in ("raw", "crlf"):
         out = parity(bash, server_for(d, "app.log", name), files, name, fmts, posix=False)
         assert any(x.startswith(b"R\t") for x in out)
+
+
+# ---- Task 3: 로그 경로 여러 개 ----
+
+def test_pipeline_multiple_globs(bash, tmp_path):
+    """두 디렉터리의 glob 결과를 합쳐 집계한다. 두 glob에 걸린 파일은 한 번만 읽는다."""
+    root = tmp_path.resolve()
+    a, b = root / "a", root / "b"
+    a.mkdir()
+    b.mkdir()
+    web = (FIXTURES / FORMATS["webtob"]).read_bytes()
+    shutil.copy(FIXTURES / FORMATS["webtob"], a / "access.log")
+    (b / "access.log.1.gz").write_bytes(gzip.compress(web[: len(web) // 2]))
+    (b / "other.log").write_bytes(web)  # 어느 glob에도 걸리지 않는다
+    globs = [posix(a) + "/access.log*", posix(b) + "/access.log*", posix(a) + "/access.*"]
+    for since in (None, "20260801"):
+        out = run_pipeline(bash, server_globs(globs, "webtob"), since=since)
+        expected = twin([(posix(a) + "/access.log", web),
+                         (posix(b) + "/access.log.1.gz", gzip.decompress(
+                             (b / "access.log.1.gz").read_bytes()))], "webtob", since=since)
+        assert any(x.startswith(b"R\t") for x in expected)
+        assert_same(out, expected)
+        assert [x[1] for x in f_lines(out)].count((posix(a) + "/access.log").encode()) == 1
+        assert not any(x.startswith(b"E\t") for x in out)
+    # gawk --posix로도 같다
+    if is_gawk(bash):
+        assert run_pipeline_posix(bash, server_globs(globs, "webtob")) == \
+            run_pipeline(bash, server_globs(globs, "webtob"))
+
+
+def test_pipeline_glob_empty(bash, tmp_path):
+    root = tmp_path.resolve()
+    shutil.copy(FIXTURES / FORMATS["webtob"], root / "access.log")
+    full = posix(root) + "/access.log*"
+    empty = posix(root) + "/missing*.log"
+    gone = posix(root) + "/nodir/x*"
+    out = run_pipeline(bash, server_globs([full, empty, gone], "webtob"))
+    errors = [x for x in out if x.startswith(b"E\t")]
+    assert errors == [b"E\tglob_empty\t" + empty.encode(), b"E\tglob_empty\t" + gone.encode()]
+    assert_same([x for x in out if not x.startswith(b"E\t")], twin_dir(root, "access.log", "webtob"))
+    assert any(x.startswith(b"R\t") for x in out)
+    assert out[-1] == b"D\tdone"
+    # 모두 비면 v1처럼 "no files matched"만 낸다 (glob_empty 없음)
+    for globs in ([empty, gone], [empty]):
+        assert run_pipeline(bash, server_globs(globs, "webtob")) == [
+            b"E\tno files matched", b"Q\t0\t0", b"D\tdone"]
+    if is_gawk(bash):
+        assert run_pipeline_posix(bash, server_globs([full, empty], "webtob")) == \
+            run_pipeline(bash, server_globs([full, empty], "webtob"))
+
+
+def test_pipeline_glob_empty_cleans_control_chars(bash, tmp_path):
+    """glob에 든 제어 문자는 다른 경로처럼 ?로 바뀌고, 개행으로 줄을 위조할 수 없다."""
+    root = tmp_path.resolve()
+    shutil.copy(FIXTURES / FORMATS["webtob"], root / "access.log")
+    full = posix(root) + "/access.log*"
+    weird = posix(root) + "/a\tb\x1bc*"
+    forged = posix(root) + "/x\nR\tGET\t/forged\t2xx\t9\t20260101\t20260101\ny*"
+    out = run_pipeline(bash, server_globs([full, weird, forged], "webtob"))
+    assert [x for x in out if x.startswith(b"E\t")] == [
+        b"E\tglob_empty\t" + (posix(root) + "/a?b?c*").encode(),
+        b"E\tglob_empty\t" + (posix(root) + "/x").encode()]
+    assert not any(b"forged" in x for x in out)
+    assert_same([x for x in out if not x.startswith(b"E\t")], twin_dir(root, "access.log", "webtob"))
+
+
+def test_awk_glob_empty_markers(bash):
+    """awk: glob_empty는 파일로 세지 않는다. 파일(읽지 못한 것 포함)이 하나도 없으면
+    "no files matched"만 내고 glob_empty는 내지 않는다."""
+    ge = EMARK + b"glob_empty\t/x/b*\n"
+    assert run_awk(bash, ge + EMARK + b"glob_empty\t/y/c*\n").split(b"\n") == [
+        b"E\tno files matched", b"Q\t0\t0", b"D\tdone", b""]
+    assert run_awk(bash, ge + EMARK + b"unreadable\t/x/a.log\n").split(b"\n") == [
+        b"E\tglob_empty\t/x/b*", b"E\tunreadable\t/x/a.log", b"Q\t0\t0", b"D\tdone", b""]
+    assert run_awk(bash, ge + FMARK + b"/x/a.log\n" + LINE).split(b"\n") == [
+        b"E\tglob_empty\t/x/b*",
+        b"F\t/x/a.log\t20261118\t20261118\t1\t0\t0",
+        b"R\tGET\t/v1/a\t2xx\t1\t20261118\t20261118",
+        b"Q\t0\t0", b"D\tdone", b""]

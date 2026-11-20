@@ -172,7 +172,7 @@ class FakeClient:
 # ---------------------------------------------------------------- helpers
 
 def server(name, host, **kw):
-    base = dict(name=name, host=host, user="app", log_glob="/log/access.log*")
+    base = dict(name=name, host=host, user="app", log_globs=["/log/access.log*"])
     base.update(kw)
     return ServerConfig(**base)
 
@@ -377,7 +377,7 @@ def test_bad_config_fails_without_connecting(tmp_path):
     world = World({"10.0.0.1": {}, "10.0.0.2": {}})
     c, _ = make(world, tmp_path)
     progress = Progress()
-    results = c.collect([server("a", "10.0.0.1", log_glob="relative/access.log"),
+    results = c.collect([server("a", "10.0.0.1", log_globs=["relative/access.log"]),
                          server("b", "10.0.0.2")], None, progress, threading.Event())
     assert not results[0].ok and results[0].error.startswith("설정 오류: ")
     assert results[1].ok

@@ -47,7 +47,7 @@ class ServerConfig:
     name: str
     host: str
     user: str
-    log_glob: str
+    log_globs: list[str]  # 각각 절대 경로 + 파일 이름 패턴 (v1의 log_glob 하나를 대체)
     port: int = 22
     auth: Literal["password", "key"] = "password"
     key_file: str | None = None
@@ -135,7 +135,8 @@ class ServerScanResult:
     files: list[FileStat] = field(default_factory=list)
     truncated: bool = False
     elapsed_sec: float = 0.0
-    # (코드, 경로): unreadable / decompress_failed 등 원격 측 파일 오류
+    # (코드, 경로): unreadable / decompress_failed 등 원격 측 파일 오류,
+    # ("glob_empty", glob): 다른 glob에는 파일이 있는데 이 glob만 비었음
     file_errors: list[tuple[str, str]] = field(default_factory=list)
 
     @property

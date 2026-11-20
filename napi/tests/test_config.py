@@ -16,8 +16,8 @@ def make_service(name="결제", **kw):
         name=name,
         spec=SpecSource(type="openapi", source="url", location="http://x/api-docs"),
         servers=[
-            ServerConfig(name="web1", host="10.0.0.1", user="app", log_glob="/var/log/web/access.log*"),
-            ServerConfig(name="web2", host="10.0.0.2", user="app", log_glob="/var/log/web/access.log*",
+            ServerConfig(name="web1", host="10.0.0.1", user="app", log_globs=["/var/log/web/access.log*"]),
+            ServerConfig(name="web2", host="10.0.0.2", user="app", log_globs=["/var/log/web/access.log*"],
                          auth="key", key_file="C:/keys/id_rsa"),
         ],
         notes={"GET /v1/settlements/yearly": Note("연 1회 정산용 (1월)", "홍길동", "2026-11-19")},
@@ -76,8 +76,8 @@ def test_validate():
     assert _errs(lambda s: setattr(s.servers[0], "host", ""))
     assert _errs(lambda s: setattr(s.servers[0], "auth", "key"))  # key_file 없음
     assert _errs(lambda s: setattr(s.servers[0], "log_format", "custom"))
-    assert _errs(lambda s: setattr(s.servers[0], "log_glob", "/var/*/log/access.log*"))
-    assert _errs(lambda s: setattr(s.servers[0], "log_glob", "var/log/access.log"))
+    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ["/var/*/log/access.log*"]))
+    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ["var/log/access.log"]))
     # 정상 custom
     ok = make_service()
     ok.servers[0].log_format = "custom"
@@ -290,3 +290,61 @@ def test_validate_log_formats():
     assert any("모르는 로그 형식" in m and "nope" in m for m in unknown)
     # 기본 제공 형식과 custom(+필드 번호)은 사용자 형식 없이도 알려진 이름이다
     assert errs([], "webtob_combined") == []
+
+
+# ---- Task 3: 로그 경로 여러 개 ----
+
+def test_server_config_field_order():
+    assert [f.name for f in dataclasses.fields(ServerConfig)] == [
+        "name", "host", "user", "log_globs", "port", "auth", "key_file", "log_format",
+        "custom_format"]
+
+
+def test_config_reads_legacy_log_glob(tmp_path):
+    p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
+                         "  - {name: s, host: h, user: u, log_glob: /x/a.log*}\n")
+    cfg = load_config(p)
+    assert cfg.services[0].servers[0].log_globs == ["/x/a.log*"]
+    save_config(cfg, p)
+    text = p.read_text(encoding="utf-8")
+    assert "log_globs" in text
+    assert "log_glob:" not in text
+    assert load_config(p) == cfg
+
+
+def test_config_log_globs_roundtrip(tmp_path):
+    p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
+                         "  - name: s\n    host: h\n    user: u\n"
+                         "    log_globs: [/x/a.log*, /y/b.log*]\n")
+    cfg = load_config(p)
+    assert cfg.services[0].servers[0].log_globs == ["/x/a.log*", "/y/b.log*"]
+    save_config(cfg, p)
+    assert load_config(p) == cfg
+
+
+@pytest.mark.parametrize("server", [
+    "{name: s, host: h, user: u, log_glob: /a, log_globs: [/b]}",
+    "{name: s, host: h, user: u, log_globs: {a: 1}}",
+])
+def test_bad_log_globs_raise_config_error(tmp_path, server):
+    p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
+                         f"  - {server}\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(p)
+    assert "설정 파일" in str(e.value)
+
+
+def test_log_globs_scalars_become_strings(tmp_path):
+    p = _write(tmp_path, "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
+                         "  - {name: s, host: h, user: u, log_globs: /x/a.log}\n")
+    assert load_config(p).services[0].servers[0].log_globs == ["/x/a.log"]
+
+
+def test_validate_log_globs():
+    errs = _errs(lambda s: setattr(s.servers[0], "log_globs", []))
+    assert len(errs) == 1 and "로그 경로를 하나 이상" in errs[0] and "web1" in errs[0]
+    ok = ["/var/log/a/access.log*", "/var/log/b/access.log*"]
+    assert _errs(lambda s: setattr(s.servers[0], "log_globs", ok)) == []
+    for bad in ("var/log/access.log", "/var/*/log/access.log*", "/var/lo?/x", "/var/[l]og/x"):
+        errs = _errs(lambda s: setattr(s.servers[0], "log_globs", [ok[0], bad]))
+        assert len(errs) == 1 and bad in errs[0], (bad, errs)

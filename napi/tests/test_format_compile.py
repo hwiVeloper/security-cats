@@ -451,3 +451,26 @@ def test_status_with_less_than_modifier():
     assert spec.tokens[spec.last_essential].text == "%<s"
     line = '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 404 1'
     assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", 404, "20261118")
+
+
+# ---- 판정 R7: 탭을 뺀 C0 제어 문자는 형식에 쓸 수 없다 ----
+
+@pytest.mark.parametrize("pattern", [
+    '%t "%r" \x00',
+    '%t "%r"\n%s',
+    '%t "%r" \x01x',
+    '%t\r"%r"',
+    '%t "%r" %{a\x1fb}i',
+    '%{%Y-%m-%d\x1b}t "%r"',
+])
+def test_control_chars_in_pattern_are_format_error(pattern):
+    with pytest.raises(FormatError, match="^형식에 쓸 수 없는 문자가 있어요$"):
+        compile_format(pattern)
+    res = run_test_format(pattern, '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1"')
+    assert res["ok"] is False and res["error"] == "형식에 쓸 수 없는 문자가 있어요"
+
+
+def test_tab_in_pattern_is_allowed():
+    spec = compile_format('%t\t"%r"\t%s')
+    assert parse_with_spec('[18/Nov/2026:10:00:01 +0900]\t"GET /a HTTP/1.1"\t200', spec) == \
+        ParsedLine("GET", "/a", 200, "20261118")

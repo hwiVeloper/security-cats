@@ -248,7 +248,7 @@ def test_test_log_line(env):
 def test_preview_commands(env):
     api = env["api"]
     cfg = load_config(env["path"])
-    cfg.services[0].servers[2].log_glob = "relative/*.log"
+    cfg.services[0].servers[2].log_globs = ["relative/*.log"]
     save_config(cfg, env["path"])
     res = api.preview_commands(SVC, "90")
     assert set(res) == {"WAS-01", "WAS-02", "WAS-03"}

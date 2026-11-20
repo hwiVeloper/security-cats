@@ -18,7 +18,7 @@ ALL_FORMATS = [*BUILTIN_FORMATS, "my", "my_b"]
 
 def make_server(**kw):
     base = dict(name="web1", host="10.0.0.1", user="app",
-                log_glob="/webtob/log/access.log*")
+                log_globs=["/webtob/log/access.log*"])
     base.update(kw)
     return ServerConfig(**base)
 
@@ -47,11 +47,13 @@ def test_split_glob_rejects_unsafe(log_glob):
     with pytest.raises(ValueError):
         split_glob(log_glob)
     with pytest.raises(ValueError):
-        build_pipeline(make_server(log_glob=log_glob), Settings(), None, TOKEN)
+        build_pipeline(make_server(log_globs=[log_glob]), Settings(), None, TOKEN)
+    with pytest.raises(ValueError):  # 여러 개 중 하나만 잘못돼도 거부한다
+        build_pipeline(make_server(log_globs=["/ok/a*", log_glob]), Settings(), None, TOKEN)
 
 
 def test_command_quotes_values():
-    server = make_server(log_glob="/x/it's/a*.log")
+    server = make_server(log_globs=["/x/it's/a*.log"])
     cmd = build_remote_command(server, Settings(), None, TOKEN)
     assert "'\"'\"'" in cmd
     script = build_pipeline(server, Settings(), None, TOKEN)
@@ -59,12 +61,12 @@ def test_command_quotes_values():
     assert script in shlex.split(cmd)
     # 본문 안에서 find는 디렉터리와 패턴을 각각 한 인자로 받는다
     words = shlex.split(script)
-    assert words[:3] == ["find", "/x/it's", "-maxdepth"]
+    assert words[:3] == ["g1=$(find", "/x/it's", "-maxdepth"]
     assert words[words.index("-name") + 1] == "a*.log"
 
 
 def test_command_quotes_shell_metacharacters():
-    server = make_server(log_glob="/x/$(id)`id`;rm -rf ~/a b*.log")
+    server = make_server(log_globs=["/x/$(id)`id`;rm -rf ~/a b*.log"])
     script = build_pipeline(server, Settings(), None, TOKEN)
     words = shlex.split(script)
     assert words[1] == "/x/$(id)`id`;rm -rf ~"
@@ -113,15 +115,22 @@ def test_command_without_since_has_no_newermt():
     assert "-v SINCE=0" in cmd
 
 
+@pytest.mark.parametrize("globs", [
+    ["/webtob/log/access.log*"],
+    ["/webtob/log/access.log*", "/x/it's/a b*.log", "/x/$(id)`id`;rm -rf ~/c>d<e*"],
+])
 @pytest.mark.parametrize("since", [None, "20260522"])
 @pytest.mark.parametrize("fmt,custom", [
     ("webtob", None),
     ("custom", CustomFormat(method_field=2, path_field=3, status_field=4,
                             time_field=1, time_format="iso8601")),
 ])
-def test_command_is_read_only(since, fmt, custom):
-    server = make_server(log_format=fmt, custom_format=custom)
+def test_command_is_read_only(since, fmt, custom, globs):
+    server = make_server(log_format=fmt, custom_format=custom, log_globs=globs)
     for text in shell_portions(server, Settings(), since):
+        for g in globs:  # 따옴표로 감싼 사용자 값은 검사 대상에서 뺀다
+            for value in (g, *split_glob(g)):
+                text = text.replace(shlex.quote(value), "Q")
         redirections = re.findall(r"[0-9]*>+&?[^\s;|&)]*", text)
         assert redirections, text
         assert set(redirections) <= {">/dev/null", "2>/dev/null"}, text
@@ -248,3 +257,27 @@ def test_awk_string_literal_escaping():
     assert _awk_str("@PARSE@ / }{ ' $1") == r'''"\100PARSE\100 / }{ ' $1"'''
 
 
+
+
+# ---- Task 3: 로그 경로 여러 개 ----
+
+def test_pipeline_multiple_globs_structure():
+    globs = ["/a/x/access.log*", "/b/it's/err*.log", "/a/x/access.log*"]
+    script = build_pipeline(make_server(log_globs=globs), Settings(), "20260522", TOKEN)
+    # 중복 glob은 한 번만 find한다
+    assert script.count("find ") == 2
+    for directory, pattern in (("/a/x", "access.log*"), ("/b/it's", "err*.log")):
+        cmd = f"find {shlex.quote(directory)} -maxdepth 1 -type f -name {shlex.quote(pattern)}"
+        assert script.count(cmd + " -newermt 2026-05-22 2>/dev/null") == 1
+    # 비어 있는 glob은 토큰 마커로 알린다 (glob은 따옴표로 감싼다)
+    for g in ("/a/x/access.log*", "/b/it's/err*.log"):
+        assert script.count(r"""printf '\n\001E%s\tglob_empty\t%s\n' "$0" """
+                            + shlex.quote(g) + ";") == 1
+    # 전체 목록은 sort -u로 중복을 지운 뒤 v1 파일 루프로 간다
+    assert "| sort -u | while IFS= read -r f; do " in script
+    assert "| sort |" not in script
+
+
+def test_pipeline_requires_a_glob():
+    with pytest.raises(ValueError, match="로그 경로를 하나 이상"):
+        build_pipeline(make_server(log_globs=[]), Settings(), None, TOKEN)

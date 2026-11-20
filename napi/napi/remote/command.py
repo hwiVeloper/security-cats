@@ -29,6 +29,9 @@ _FILE_LOOP = (
     r"""printf '\n\001F%s\t%s\n' "$0" "$f"; """
     r"""gzip -dcf -- "$f" 2>/dev/null || printf '\n\001E%s\tdecompress_failed\t%s\n' "$0" "$f"; """
     "done")
+# 다른 glob에는 파일이 있는데 이 glob만 비었음을 알린다. {}는 shlex.quote한 glob이다.
+# 모든 glob이 비면 awk가 이 표시들을 버리고 v1처럼 "E\tno files matched"만 낸다.
+_GLOB_EMPTY = r"""printf '\n\001E%s\tglob_empty\t%s\n' "$0" {}"""
 
 
 def split_glob(log_glob: str) -> tuple[str, str]:
@@ -76,16 +79,29 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
     max_rows = _int("max_rows", settings.max_rows, 1)  # MAXKEYS = 4 × max_rows ≥ 4
     top_404 = _int("top_404", settings.top_404, 0)
     program = awk_program(server.log_format, server.custom_format, formats)
-    directory, pattern = split_glob(server.log_glob)
+    globs = list(dict.fromkeys(server.log_globs))  # 같은 glob은 한 번만 (순서 유지)
+    if not globs:
+        raise ValueError("로그 경로를 하나 이상 지정해야 해요")
+    newermt = [] if since is None else ["-newermt", f"{since[:4]}-{since[4:6]}-{since[6:]}"]
 
-    find = ["find", shlex.quote(directory), "-maxdepth", "1", "-type", "f",
-            "-name", shlex.quote(pattern)]
-    if since is not None:
-        find += ["-newermt", f"{since[:4]}-{since[4:6]}-{since[6:]}"]
+    # glob마다 find 결과를 변수 gN에 받아 둔다. 비어 있으면 glob_empty 표시를 내고,
+    # 모두 모은 목록은 sort -u로 중복을 지운 뒤 v1 파일 루프로 넘긴다.
+    # (표시는 sort가 입력을 다 받기 전에 나가므로 항상 첫 F 표시보다 앞이다.)
+    finds, empty_marks, lists = [], [], []
+    for i, glob in enumerate(globs, 1):
+        directory, pattern = split_glob(glob)
+        find = ["find", shlex.quote(directory), "-maxdepth", "1", "-type", "f",
+                "-name", shlex.quote(pattern), *newermt]
+        finds.append(f"g{i}=$({' '.join(find)} 2>/dev/null);")
+        empty_marks.append(f'[ -n "$g{i}" ] || ' + _GLOB_EMPTY.format(shlex.quote(glob)) + ";")
+        lists.append(f'"$g{i}"')
+    list_files = (f"for g in {' '.join(lists)}; do "
+                  """[ -z "$g" ] || printf '%s\\n' "$g"; done""")
     awk = ["LC_ALL=C", "awk", "-v", f"SINCE={since or 0}", "-v", f"MAXROWS={max_rows}",
            "-v", f"MAXKEYS={4 * max_rows}", "-v", f"TOP404={top_404}",
            "-v", 'MARK="$0"', shlex.quote(program)]
-    return " | ".join([" ".join(find) + " 2>/dev/null", "sort", _FILE_LOOP, " ".join(awk)])
+    body = " ".join([*empty_marks, " | ".join([list_files, "sort -u", _FILE_LOOP])])
+    return " ".join([*finds, "{", body + ";", "}", "|", " ".join(awk)])
 
 
 def build_remote_command(server: ServerConfig, settings: Settings, since: str | None,

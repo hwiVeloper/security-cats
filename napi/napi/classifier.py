@@ -88,6 +88,9 @@ def _reliability(
             reasons.append(f"{s.server} 결과가 너무 많아 일부만 집계됐어요")
         if any(code in _FILE_ERROR_CODES for code, _ in s.file_errors):
             reasons.append(f"{s.server}에서 읽지 못한 로그 파일이 있어요")
+        for code, glob in s.file_errors:
+            if code == "glob_empty":
+                reasons.append(f"{s.server}의 경로 {glob}에서 파일을 찾지 못했어요")
     coverage = min(coverages) if coverages else 0
     return Reliability("low" if reasons else "ok", coverage, reasons)
 

@@ -169,3 +169,13 @@ def test_reliability_stale_logs(newest, stale):
         assert r.reasons == [f"A의 최신 로그가 {y}-{m}-{d}예요 — 최근 로그가 포함됐는지 확인해 주세요"]
     else:
         assert r.level == "ok" and r.reasons == []
+
+
+def test_reliability_glob_empty():
+    s = server("WAS-01", file_errors=[("glob_empty", "/x/b*"), ("glob_empty", "/y/c*.log")])
+    r = run([op()], {"GET /a": stats()}, [s])[1]
+    assert r.level == "low"
+    assert r.reasons == ["WAS-01의 경로 /x/b*에서 파일을 찾지 못했어요",
+                         "WAS-01의 경로 /y/c*.log에서 파일을 찾지 못했어요"]
+    # glob_empty는 "읽지 못한 로그 파일"이 아니다
+    assert "WAS-01에서 읽지 못한 로그 파일이 있어요" not in r.reasons

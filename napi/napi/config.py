@@ -66,8 +66,29 @@ def _fields(d, ints: tuple[str, ...] = (), strs: tuple[str, ...] = (),
     return out
 
 
-_SERVER_STRS = ("name", "host", "user", "log_glob", "auth", "log_format")
+_SERVER_STRS = ("name", "host", "user", "auth", "log_format")
 _SETTINGS_INTS = ("max_parallel_servers", "remote_timeout_sec", "max_rows", "top_404")
+
+
+def _log_globs(sv: dict) -> None:
+    """서버 칸의 로그 경로를 log_globs(문자열 목록)로 맞춘다.
+    v1 설정의 log_glob: x는 log_globs: [x]로 읽는다 (저장할 때는 log_globs만 쓴다)."""
+    if "log_glob" in sv:
+        if "log_globs" in sv:
+            raise ConfigError("설정 파일 내용이 올바르지 않습니다: "
+                              "log_glob과 log_globs를 함께 쓸 수 없습니다")
+        sv["log_globs"] = [sv.pop("log_glob")]
+    if "log_globs" not in sv:
+        return  # 빠진 칸은 dataclass 생성이 TypeError(→ ConfigError)로 알린다
+    items = sv["log_globs"]
+    if items is None:
+        items = []
+    elif isinstance(items, dict):
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: "
+                          f"log_globs는 목록이어야 합니다: {items!r}")
+    elif not isinstance(items, list):
+        items = [items]  # 손으로 쓴 log_globs: /a/b (값 하나)
+    sv["log_globs"] = [_str(x) for x in items]
 
 
 def _log_formats(items) -> list[LogFormatDef]:
@@ -87,6 +108,7 @@ def _from_dict(d: dict) -> AppConfig:
             servers = []
             for sv in s.get("servers") or []:
                 sv = _fields(sv, ints=("port",), strs=_SERVER_STRS, optional_strs=("key_file",))
+                _log_globs(sv)
                 cf = sv.pop("custom_format", None)
                 servers.append(ServerConfig(
                     **sv, **({"custom_format": CustomFormat(**cf)} if cf else {})))
@@ -153,6 +175,7 @@ def _below(value, minimum: int) -> bool:
     return isinstance(value, bool) or not isinstance(value, int) or value < minimum
 
 
+_DIR_GLOB_CHARS = "*?["  # napi.remote.command.split_glob과 같은 규칙
 _SETTINGS_MIN = {"max_parallel_servers": 1, "remote_timeout_sec": 1, "max_rows": 1, "top_404": 0}
 
 
@@ -205,8 +228,11 @@ def validate_config(cfg: AppConfig) -> list[str]:
                 errors.append(f"{sl}: 모르는 로그 형식이에요: {sv.log_format}")
             if sv.log_format == "custom" and sv.custom_format is None:
                 errors.append(f"{sl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
-            if not sv.log_glob.startswith("/"):
-                errors.append(f"{sl}: 로그 경로는 '/'로 시작해야 합니다.")
-            elif "*" in sv.log_glob.rsplit("/", 1)[0]:
-                errors.append(f"{sl}: 로그 경로의 디렉터리 부분에는 '*'를 쓸 수 없습니다.")
+            if not sv.log_globs:
+                errors.append(f"{sl}: 로그 경로를 하나 이상 지정해야 합니다.")
+            for glob in sv.log_globs:
+                if not glob.startswith("/"):
+                    errors.append(f"{sl}: 로그 경로는 '/'로 시작해야 합니다: {glob}")
+                elif any(ch in glob.rsplit("/", 1)[0] for ch in _DIR_GLOB_CHARS):
+                    errors.append(f"{sl}: 로그 경로의 디렉터리 부분에는 * ? [ 를 쓸 수 없습니다: {glob}")
     return errors
