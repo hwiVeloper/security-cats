@@ -9,7 +9,9 @@ import yaml
 
 from napi.models import SpecOperation, SpecSource
 
-_METHODS = ("get", "put", "post", "delete", "patch", "head", "options", "trace")
+# HEAD/OPTIONS는 판정에서 제외한다 (설계 §5.7.4). 매처도 이 메서드의 로그 행을 버리므로
+# 명세에 남기면 항상 "잠듦"이 된다.
+_METHODS = ("get", "put", "post", "delete", "patch", "trace")
 
 
 class SpecError(Exception):
@@ -33,12 +35,20 @@ def _parse_text(text: str) -> dict:
     return doc
 
 
+def _decode_body(resp) -> str:
+    """명세 응답은 UTF-8로 읽는다 (requests의 charset 추측은 한글을 깨뜨린다). BOM은 버린다."""
+    try:
+        return resp.content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return resp.text
+
+
 def load_spec(src: SpecSource, timeout: float = 15.0) -> list[SpecOperation]:
     try:
         if src.source == "url":
             resp = requests.get(src.location, timeout=timeout)
             resp.raise_for_status()
-            text = resp.text
+            text = _decode_body(resp)
         else:
             with open(src.location, encoding="utf-8-sig") as f:
                 text = f.read()
