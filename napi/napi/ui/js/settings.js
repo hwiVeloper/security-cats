@@ -722,7 +722,9 @@
         sv.custom_format = sv.custom_format || {};
         sv.custom_format.time_format = v; changed();
       })),
-      el("span", { class: "muted small", style: "grid-column:1/-1" }, "필드 번호는 줄을 공백으로 나눈 칸의 순서예요 (1부터)."));
+      el("span", { class: "muted small", style: "grid-column:1/-1" }, "필드 번호는 줄을 공백으로 나눈 칸의 순서예요 (1부터)."),
+      el("span", { class: "muted small", style: "grid-column:1/-1",
+        text: "새로 설정한다면 '로그 형식' 메뉴에서 형식을 추가해 쓰는 걸 권장해요 (필드 번호 방식은 예전 설정 호환용이에요)" }));
 
     var legendName = el("span", null, sv.name || "서버 " + (i + 1));
     var nameInput = input("text", sv.name, function (v) {
