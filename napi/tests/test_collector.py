@@ -11,7 +11,7 @@ from paramiko.ssh_exception import NoValidConnectionsError
 
 from napi import collector as collector_mod
 from napi.collector import Collector
-from napi.models import ServerConfig, Settings
+from napi.models import LogFormatDef, ServerConfig, Settings
 from napi.secrets import SessionSecrets
 
 PW = "pw-Sup3rSecret"
@@ -177,7 +177,7 @@ def server(name, host, **kw):
     return ServerConfig(**base)
 
 
-def make(world, tmp_path, settings=None, prompt=None, secrets=None):
+def make(world, tmp_path, settings=None, prompt=None, secrets=None, formats=()):
     if secrets is None:
         secrets = SessionSecrets()
         for h in world.behaviors:
@@ -190,7 +190,8 @@ def make(world, tmp_path, settings=None, prompt=None, secrets=None):
         return False
 
     c = Collector(settings or Settings(), secrets, prompt or default_prompt,
-                  tmp_path / "napi" / "known_hosts", client_factory=world.factory)
+                  tmp_path / "napi" / "known_hosts", client_factory=world.factory,
+                  formats=formats)
     return c, prompts
 
 
@@ -383,6 +384,17 @@ def test_bad_config_fails_without_connecting(tmp_path):
     assert results[1].ok
     assert len(world.clients) == 1
     assert progress.phases("a") == ["failed"]
+
+
+def test_collector_passes_formats(tmp_path):
+    world = World({"10.0.0.1": {}})
+    fmt = LogFormatDef("user_a", '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] "%r" %s')
+    c, _ = make(world, tmp_path, formats=[fmt])
+    [r] = c.collect([server("a", "10.0.0.1", log_format="user_a")], None, Progress(),
+                    threading.Event())
+    assert r.ok
+    [cl] = world.clients
+    assert "CLIENT(" in cl.commands[0]
 
 
 def test_missing_password_fails_without_connecting(tmp_path):

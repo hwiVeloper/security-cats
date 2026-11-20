@@ -13,8 +13,8 @@ from napi import __main__ as entry
 from napi.api import Api
 from napi.config import load_config, save_config
 from napi.models import (
-    AggRow, AppConfig, FileStat, Note, ServerConfig, ServerScanResult, ServiceConfig,
-    SpecOperation, SpecSource,
+    AggRow, AppConfig, FileStat, LogFormatDef, Note, ServerConfig, ServerScanResult,
+    ServiceConfig, SpecOperation, SpecSource,
 )
 from napi.secrets import SessionSecrets
 from napi.spec import SpecError
@@ -23,6 +23,8 @@ TODAY = date(2026, 11, 19)
 SVC = "라운드페이 API"
 PW = "S3cr3t-PW!xyz"
 PP = "Key-Pass#987"
+USER_A = '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] "%r" %s'
+USER_A_LINE = '[2026-11-18T10:00:01] [CLIENT(10.0.0.1)] "GET /v1/users/123?token=abc HTTP/1.1" 200'
 
 
 def ops():
@@ -56,10 +58,11 @@ def ok_result(name):
 class FakeCollector:
     """collect()가 부르는 동작을 테스트마다 behavior로 바꾼다."""
 
-    def __init__(self, settings, secrets, prompt, known_hosts, behavior=None):
+    def __init__(self, settings, secrets, prompt, known_hosts, behavior=None, formats=()):
         self.prompt = prompt
         self.known_hosts = known_hosts
         self.behavior = behavior
+        self.formats = formats
 
     def collect(self, servers, since, progress, cancel):
         if self.behavior:
@@ -75,9 +78,15 @@ class Dialogs:
         self.open_answer = None
         self.save_answer = None
         self.save_calls = []
+        self.key_answer = None
+        self.key_calls = 0
 
     def open_file(self):
         return self.open_answer
+
+    def open_key_file(self):
+        self.key_calls += 1
+        return self.key_answer
 
     def save_file(self, default_name, kind):
         self.save_calls.append((default_name, kind))
@@ -110,8 +119,9 @@ def env(tmp_path):
     save_config(app_config(), cfg_path)
     holder = {"behavior": None, "spec": lambda src: ops(), "collectors": []}
 
-    def factory(settings, secrets, prompt, known_hosts):
-        c = FakeCollector(settings, secrets, prompt, known_hosts, holder["behavior"])
+    def factory(settings, secrets, prompt, known_hosts, *, formats):
+        c = FakeCollector(settings, secrets, prompt, known_hosts, holder["behavior"],
+                          formats=formats)
         holder["collectors"].append(c)
         return c
 
@@ -124,6 +134,7 @@ def env(tmp_path):
                   results_dir=tmp_path / "results", secrets=secrets,
                   collector_factory=factory, spec_loader=lambda src: holder["spec"](src),
                   open_file=dialogs.open_file, save_file=dialogs.save_file,
+                  open_key_file=dialogs.open_key_file,
                   exporter=exporter, today=lambda: TODAY, hostkey_timeout=5.0)
         return Api(**{**kw, **overrides})
 
@@ -245,6 +256,69 @@ def test_test_log_line(env):
     assert res["ok"] is False and res["error"] == "사용자 정의 형식이 올바르지 않아요"
 
 
+def test_api_test_log_line_with_draft_formats(env):
+    api = env["api"]
+    draft = [{"name": "user_a", "pattern": USER_A}]
+    res = api.test_log_line("user_a", None, USER_A_LINE, draft)
+    assert res["ok"] is True and res["normalized"] == "/v1/users/{*}", res
+    assert res["status"] == 200 and res["date"] == "20261118"
+    # 초안이 없으면 저장된 설정의 형식을 쓴다 (아직 없음)
+    res = api.test_log_line("user_a", None, USER_A_LINE)
+    assert res["ok"] is False and res["error"] == "모르는 로그 형식이에요: user_a"
+    cfg = load_config(env["path"])
+    cfg.log_formats = [LogFormatDef("user_a", USER_A)]
+    save_config(cfg, env["path"])
+    assert api.test_log_line("user_a", None, USER_A_LINE)["ok"] is True
+    # 빈 초안은 "형식 없음"이다 (저장된 설정으로 돌아가지 않는다)
+    assert api.test_log_line("user_a", None, USER_A_LINE, [])["ok"] is False
+    # 초안 패턴이 틀리면 한국어 오류
+    res = api.test_log_line("bad", None, USER_A_LINE, [{"name": "bad", "pattern": "%h%l"}])
+    assert res["ok"] is False and res["error"]
+    # 형식이 아닌 항목은 예외 대신 한국어 오류
+    for bad in ([{"name": "x"}], ["abc"], [{"name": 1, "pattern": USER_A}], "abc"):
+        res = api.test_log_line("webtob", None, USER_A_LINE, bad)
+        assert res == {"ok": False, "error": "형식 정의가 올바르지 않아요"}, bad
+
+
+def test_api_test_log_line_with_broken_config_still_tests_builtin(env):
+    env["path"].write_text("services: [\n", encoding="utf-8")
+    line = '10.0.0.1 - - [18/Nov/2026:10:00:01 +0900] "GET /v1/a HTTP/1.1" 200 512'
+    assert env["api"].test_log_line("webtob", None, line)["ok"] is True
+
+
+def test_api_test_format(env):
+    api = env["api"]
+    res = api.test_format(USER_A, USER_A_LINE)
+    assert res["ok"] is True and res["normalized"] == "/v1/users/{*}"
+    assert res["method"] == "GET" and res["status"] == 200
+    res = api.test_format('%h%l %t "%r" %s', USER_A_LINE)
+    assert res["ok"] is False
+    assert any("\uac00" <= ch <= "\ud7a3" for ch in res["error"]), res
+    res = api.test_format(USER_A, "전혀 다른 줄")
+    assert res["ok"] is False and res["error"]
+
+
+def test_preview_commands_uses_user_formats(env):
+    api = env["api"]
+    cfg = load_config(env["path"])
+    cfg.log_formats = [LogFormatDef("user_a", USER_A)]
+    cfg.services[0].servers[0].log_format = "user_a"
+    save_config(cfg, env["path"])
+    res = api.preview_commands(SVC, "90")
+    assert "CLIENT(" in res["WAS-01"]
+    assert "CLIENT(" not in res["WAS-02"]
+
+
+def test_start_scan_passes_user_formats(env):
+    api, holder = env["api"], env["holder"]
+    cfg = load_config(env["path"])
+    cfg.log_formats = [LogFormatDef("user_a", USER_A)]
+    save_config(cfg, env["path"])
+    scan_id = api.start_scan(SVC, "365")["scan_id"]
+    assert wait_phase(api, scan_id)["phase"] == "done"
+    assert list(holder["collectors"][0].formats) == [LogFormatDef("user_a", USER_A)]
+
+
 def test_preview_commands(env):
     api = env["api"]
     cfg = load_config(env["path"])
@@ -279,6 +353,46 @@ def test_missing_secrets_and_passphrase(env):
     assert secrets.get_passphrase("C:/keys/id_ed25519") == PP
     assert api.set_password("app", "10.0.0.1", 22, PW) == {"ok": True}
     assert [m["server"] for m in api.missing_secrets(SVC)] == ["WAS-02", "WAS-03"]
+
+
+def test_api_secret_status_and_clear(env):
+    api, secrets = env["api"], env["secrets"]
+    assert api.secret_status(SVC) == {"WAS-01": "missing", "WAS-02": "missing",
+                                      "WAS-03": "missing"}
+    api.set_password("app", "10.0.0.1", 22, PW)
+    assert api.secret_status(SVC) == {"WAS-01": "set", "WAS-02": "missing",
+                                      "WAS-03": "missing"}
+    assert api.secret_status("키 서비스") == {"K1": "n/a"}
+    api.set_passphrase("C:/keys/id_ed25519", PP)
+    assert api.secret_status("키 서비스") == {"K1": "set"}
+
+    assert api.clear_secret(SVC, "WAS-01") == {"ok": True}
+    assert secrets.get_password("app", "10.0.0.1", 22) is None
+    assert api.secret_status(SVC)["WAS-01"] == "missing"
+    assert api.clear_secret("키 서비스", "K1") == {"ok": True}
+    assert secrets.get_passphrase("C:/keys/id_ed25519") is None
+    assert api.secret_status("키 서비스") == {"K1": "n/a"}
+
+    assert api.clear_secret(SVC, "없는서버") == {"ok": False,
+                                                "error": "서버를 찾을 수 없어요: 없는서버"}
+    assert api.clear_secret("없음", "WAS-01")["ok"] is False
+    assert api.secret_status("없음")["ok"] is False
+
+
+def test_api_secret_status_key_server_matches_exact_key_file(env):
+    api = env["api"]
+    api.set_passphrase("c:/keys/id_ed25519", PP)  # 대소문자가 다른 경로
+    assert api.secret_status("키 서비스") == {"K1": "n/a"}
+
+
+def test_api_pick_key_file(env):
+    api, dialogs = env["api"], env["dialogs"]
+    p = str(env["tmp"] / "no-such-dir" / "id_ed25519")  # 존재하지 않아도 된다 (열지 않음)
+    dialogs.key_answer = p
+    assert api.pick_key_file() == {"ok": True, "path": p}
+    dialogs.key_answer = None
+    assert api.pick_key_file() == {"ok": False, "path": None}
+    assert dialogs.key_calls == 2
 
 
 def test_set_password_apply_to_service(env):
@@ -707,7 +821,12 @@ PUBLIC = {
     "get_state", "save_config", "open_config_dialog", "test_log_line", "preview_commands",
     "missing_secrets", "set_password", "set_passphrase", "start_scan", "get_scan_progress",
     "answer_hostkey", "cancel_scan", "get_result", "save_note", "delete_note", "export",
+    "test_format", "secret_status", "clear_secret", "pick_key_file",
 }
+
+
+def test_public_method_count():
+    assert len(PUBLIC) == 20
 
 
 def test_no_secret_in_any_return(env, tmp_path):
@@ -742,6 +861,12 @@ def test_no_secret_in_any_return(env, tmp_path):
     dialogs.open_answer = None
     call("open_config_dialog")
     call("test_log_line", "webtob", None, f"x {PW}")
+    call("test_log_line", "user_a", None, USER_A_LINE, [{"name": "user_a", "pattern": USER_A}])
+    call("test_format", USER_A, f"x {PW}")
+    call("secret_status", SVC)
+    call("secret_status", "키 서비스")
+    dialogs.key_answer = "C:/keys/id_ed25519"
+    call("pick_key_file")
     call("preview_commands", SVC, "365")
     call("missing_secrets", SVC)
     call("missing_secrets", "키 서비스")
@@ -750,6 +875,9 @@ def test_no_secret_in_any_return(env, tmp_path):
     call("delete_note", SVC, "GET /v1/b")
     dialogs.save_answer = str(tmp_path / "r.html")
     call("export", SVC, "html")
+    call("clear_secret", SVC, "WAS-01")
+    call("clear_secret", "키 서비스", "K1")
+    call("clear_secret", SVC, "없는서버")
 
     assert {name for name, _ in outs} == PUBLIC
     for name, out in outs:

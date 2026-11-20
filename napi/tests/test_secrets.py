@@ -43,3 +43,23 @@ def test_clear_forgets_everything():
     s.clear()
     assert s.get_password("app", "10.0.0.1", 22) is None
     assert s.get_passphrase("C:/keys/id_rsa") is None
+
+
+def test_secrets_has_and_clear():
+    s = SessionSecrets()
+    assert s.has_password("app", "10.0.0.1", 22) is False
+    assert s.has_passphrase("C:/keys/id_rsa") is False
+    s.set_password("app", "10.0.0.1", 22, "pw-1")
+    s.set_password("app", "10.0.0.2", 22, "pw-2")
+    s.set_passphrase("C:/keys/id_rsa", "pp-1")
+    assert s.has_password("app", "10.0.0.1", "22") is True
+    assert s.has_passphrase("C:/keys/id_rsa") is True
+    s.clear_password("app", "10.0.0.1", "22")
+    s.clear_passphrase("C:/keys/id_rsa")
+    assert s.has_password("app", "10.0.0.1", 22) is False
+    assert s.get_password("app", "10.0.0.1", 22) is None
+    assert s.has_passphrase("C:/keys/id_rsa") is False
+    assert s.get_passphrase("C:/keys/id_rsa") is None
+    assert s.get_password("app", "10.0.0.2", 22) == "pw-2"  # 다른 서버는 그대로
+    s.clear_password("app", "10.0.0.9", 22)  # 없는 것을 지워도 오류가 아니다
+    s.clear_passphrase("C:/keys/none")

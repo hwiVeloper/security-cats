@@ -7,14 +7,14 @@ import os
 import shlex
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import paramiko
 from paramiko.hostkeys import HostKeyEntry
 
-from napi.models import ServerConfig, ServerScanResult, Settings
+from napi.models import LogFormatDef, ServerConfig, ServerScanResult, Settings
 from napi.remote.command import build_remote_command
 from napi.remote.protocol import parse_remote_output
 from napi.secrets import SessionSecrets
@@ -106,12 +106,13 @@ def _load_key(key_file: str, passphrase: str | None) -> paramiko.PKey:
 class Collector:
     def __init__(self, settings: Settings, secrets: SessionSecrets,
                  host_key_prompt: HostKeyPrompt, known_hosts: Path,
-                 client_factory=paramiko.SSHClient):
+                 client_factory=paramiko.SSHClient, formats: Sequence[LogFormatDef] = ()):
         self._settings = settings
         self._secrets = secrets
         self._prompt = host_key_prompt
         self._known_hosts = Path(known_hosts)
         self._client_factory = client_factory
+        self._formats = tuple(formats)
 
     def collect(self, servers: list[ServerConfig], since: str | None,
                 progress: ProgressFn, cancel: threading.Event) -> list[ServerScanResult]:
@@ -139,7 +140,8 @@ class Collector:
 
         token = "napi-scan-" + os.urandom(4).hex()
         try:
-            command = build_remote_command(server, self._settings, since, token)
+            command = build_remote_command(server, self._settings, since, token,
+                                           self._formats)
             auth = self._auth_kwargs(server)
         except ValueError as e:
             progress(name, "failed")

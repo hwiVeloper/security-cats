@@ -21,8 +21,11 @@ from napi import paths
 from napi.classifier import window_bounds
 from napi.collector import Collector
 from napi.config import ConfigError, _from_dict, load_config, save_config, validate_config
+from napi.logformat import test_format as _test_format
 from napi.logformat import test_sample_line
-from napi.models import AppConfig, CustomFormat, Note, ServiceConfig
+from napi.models import (
+    AppConfig, CustomFormat, LogFormatDef, Note, ServerConfig, ServiceConfig,
+)
 from napi.remote.command import build_remote_command
 from napi.scan import ScanError, run_scan
 from napi.secrets import SessionSecrets
@@ -99,6 +102,13 @@ def _webview_save_file(default_name: str, kind: str) -> str | None:
     return _first(picked)
 
 
+def _webview_open_key_file() -> str | None:
+    import webview
+    picked = webview.windows[0].create_file_dialog(
+        webview.FileDialog.OPEN, file_types=("모든 파일 (*.*)",))
+    return _first(picked)
+
+
 def _first(picked) -> str | None:
     if not picked:
         return None
@@ -126,12 +136,26 @@ def _custom(d: dict | None) -> CustomFormat | None:
         raise _UserError("사용자 정의 형식이 올바르지 않아요") from None
 
 
+def _draft_formats(items) -> list[LogFormatDef]:
+    """설정 화면의 저장 전 형식 목록 ([{name, pattern}, ...]) -> LogFormatDef."""
+    if not isinstance(items, list):
+        raise _UserError("형식 정의가 올바르지 않아요")
+    out = []
+    for f in items:
+        if not (isinstance(f, dict) and isinstance(f.get("name"), str)
+                and isinstance(f.get("pattern"), str)):
+            raise _UserError("형식 정의가 올바르지 않아요")
+        out.append(LogFormatDef(name=f["name"], pattern=f["pattern"]))
+    return out
+
+
 class Api:
     def __init__(self, config_path: Path | None = None, known_hosts: Path | None = None,
                  results_dir: Path | None = None, secrets: SessionSecrets | None = None,
                  collector_factory: Callable = Collector, spec_loader: Callable = load_spec,
                  open_file: Callable[[], str | None] = _webview_open_file,
                  save_file: Callable[[str, str], str | None] = _webview_save_file,
+                 open_key_file: Callable[[], str | None] = _webview_open_key_file,
                  exporter=None, today: Callable[[], date] = date.today,
                  hostkey_timeout: float = HOSTKEY_TIMEOUT_SEC):
         self._config_path = Path(config_path) if config_path else paths.config_path()
@@ -142,6 +166,7 @@ class Api:
         self._spec_loader = spec_loader
         self._open_file = open_file
         self._save_file = save_file
+        self._open_key_file = open_key_file
         self._exporter = exporter
         self._today = today
         self._hostkey_timeout = hostkey_timeout
@@ -160,6 +185,13 @@ class Api:
             if svc.name == name:
                 return svc
         raise _UserError(f"서비스를 찾을 수 없어요: {name}")
+
+    @staticmethod
+    def _server(svc: ServiceConfig, name: str) -> ServerConfig:
+        for server in svc.servers:
+            if server.name == name:
+                return server
+        raise _UserError(f"서버를 찾을 수 없어요: {name}")
 
     def _scan(self, scan_id: str) -> _Scan:
         with self._lock:
@@ -210,8 +242,21 @@ class Api:
         return {"ok": True, "path": str(path)}
 
     @_safe
-    def test_log_line(self, fmt: str, custom: dict | None, line: str) -> dict:
-        return test_sample_line(line, fmt, _custom(custom))
+    def test_log_line(self, fmt: str, custom: dict | None, line: str,
+                      formats: list[dict] | None = None) -> dict:
+        """formats가 있으면 (설정 화면의 저장 전 초안) 그것을, 없으면 설정 파일의 형식을 쓴다."""
+        if formats is not None:
+            defs = _draft_formats(formats)
+        else:
+            try:
+                defs = self._load().log_formats
+            except ConfigError:
+                defs = []  # 설정 파일이 깨져도 기본 제공 형식은 시험할 수 있게 한다
+        return test_sample_line(line, fmt, _custom(custom), defs)
+
+    @_safe
+    def test_format(self, pattern: str, line: str) -> dict:
+        return _test_format(pattern, line)
 
     @_safe
     def preview_commands(self, service: str, window: str) -> dict:
@@ -223,7 +268,7 @@ class Api:
         for server in svc.servers:
             try:
                 out[server.name] = build_remote_command(server, cfg.settings, since,
-                                                        PREVIEW_TOKEN)
+                                                        PREVIEW_TOKEN, cfg.log_formats)
             except ValueError as e:
                 out[server.name] = f"설정 오류: {e}"
         return out
@@ -251,6 +296,40 @@ class Api:
     def set_passphrase(self, key_file: str, passphrase: str) -> dict:
         self._secrets.set_passphrase(key_file, passphrase)
         return {"ok": True}
+
+    @_safe
+    def secret_status(self, service: str) -> dict:
+        """서버명 -> "set" | "missing" | "n/a". 값은 절대 돌려주지 않는다.
+        키파일 서버는 passphrase가 없으면 "n/a"다 (암호 없는 키일 수 있다)."""
+        svc = self._service(self._load(), service)
+        out = {}
+        for s in svc.servers:
+            if s.auth == "key":
+                out[s.name] = ("set" if s.key_file and self._secrets.has_passphrase(s.key_file)
+                               else "n/a")
+            else:
+                out[s.name] = ("set" if self._secrets.has_password(s.user, s.host, s.port)
+                               else "missing")
+        return out
+
+    @_safe
+    def clear_secret(self, service: str, server: str) -> dict:
+        """해당 서버의 비밀번호 또는 키파일 암호를 메모리에서 지운다."""
+        s = self._server(self._service(self._load(), service), server)
+        if s.auth == "key":
+            if s.key_file:
+                self._secrets.clear_passphrase(s.key_file)
+        else:
+            self._secrets.clear_password(s.user, s.host, s.port)
+        return {"ok": True}
+
+    @_safe
+    def pick_key_file(self) -> dict:
+        """키파일 경로만 고른다. 파일은 열거나 읽지 않는다."""
+        picked = self._open_key_file()
+        if not picked:
+            return {"ok": False, "path": None}
+        return {"ok": True, "path": str(picked)}
 
     # ------------------------------------------------------------------- scan
 
@@ -286,7 +365,8 @@ class Api:
         phase, error = "failed", None
         try:
             known_hosts = self._known_hosts or paths.known_hosts_path()
-            collector = self._collector_factory(cfg.settings, self._secrets, prompt, known_hosts)
+            collector = self._collector_factory(cfg.settings, self._secrets, prompt, known_hosts,
+                                                formats=cfg.log_formats)
             result = run_scan(svc, cfg.settings, window, collector, progress, scan.cancel,
                               today=self._today(), spec_loader=self._spec_loader)
             if scan.cancel.is_set():

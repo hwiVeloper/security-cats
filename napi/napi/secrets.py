@@ -21,6 +21,18 @@ class SessionSecrets:
     def get_passphrase(self, key_file: str) -> str | None:
         return self._passphrases.get(key_file)
 
+    def has_password(self, user: str, host: str, port: int) -> bool:
+        return (user, host, int(port)) in self._passwords
+
+    def has_passphrase(self, key_file: str) -> bool:
+        return key_file in self._passphrases
+
+    def clear_password(self, user: str, host: str, port: int) -> None:
+        self._passwords.pop((user, host, int(port)), None)
+
+    def clear_passphrase(self, key_file: str) -> None:
+        self._passphrases.pop(key_file, None)
+
     def missing_for(self, servers: list[ServerConfig]) -> list[ServerConfig]:
         """비밀번호가 필요한데 아직 없는 서버. 키파일 서버는 암호 없이 먼저 시도하므로 빼고 돌려준다."""
         return [s for s in servers
