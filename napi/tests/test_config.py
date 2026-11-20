@@ -348,3 +348,52 @@ def test_validate_log_globs():
     for bad in ("var/log/access.log", "/var/*/log/access.log*", "/var/lo?/x", "/var/[l]og/x"):
         errs = _errs(lambda s: setattr(s.servers[0], "log_globs", [ok[0], bad]))
         assert len(errs) == 1 and bad in errs[0], (bad, errs)
+
+
+# ---- 최종 리뷰 D1: split_glob 규칙과 제어 문자 / D2: // . .. 가 든 디렉터리 ----
+
+SL = "서비스 '결제' / 서버 'web1': "
+
+
+def _glob_errs(bad):
+    return _errs(lambda s: setattr(s.servers[0], "log_globs", ["/var/log/a/access.log*", bad]))
+
+
+@pytest.mark.parametrize("bad", ["/var/log/", "/"])
+def test_validate_applies_split_glob_rules(bad):
+    errs = _glob_errs(bad)
+    assert errs == [f"{SL}로그 경로를 쓸 수 없습니다 — 파일 이름 패턴이 비어 있어요: {bad}"]
+
+
+@pytest.mark.parametrize("bad", [
+    "/var/log/a\tb*", "/var/log/\x00x", "/var/lo\ng/a*", "/var/log/a\x1f", "/var/log/\x1bx*",
+    "\x01/var/log/a*"])
+def test_validate_rejects_control_chars_in_glob(bad):
+    assert _glob_errs(bad) == [f"{SL}로그 경로에 제어 문자를 쓸 수 없습니다: {bad}"]
+
+
+@pytest.mark.parametrize("bad", [
+    "/var//log/a*", "/var/./log/a*", "/var/../log/a*", "/var/log/./a*", "/var/log/../a*",
+    "/var/log//a*", "//a*", "/./a*", "/../a*", "/var/log/..//a*"])
+def test_validate_rejects_dot_segments_and_double_slash(bad):
+    assert _glob_errs(bad) == [f"{SL}경로에 // 나 . / .. 를 쓸 수 없어요: {bad}"]
+
+
+@pytest.mark.parametrize("ok", [
+    "/var/log/.hidden*", "/var/.log/a*", "/var/log/..a*", "/var/..x/a*", "/var/x./a*",
+    "/var/log/a..b", "/a*", "/var/log/access.log.1", "/var/log/ 공백/a*"])
+def test_validate_accepts_dotted_names(ok):
+    assert _glob_errs(ok) == []
+
+
+def test_every_valid_glob_builds_a_pipeline():
+    """validate_config를 통과한 glob은 스캔 때 build_pipeline이 거부하지 않는다 (D1)."""
+    from napi.models import Settings
+    from napi.remote.command import build_pipeline
+    candidates = ["/var/log/", "/", "/a*", "/var/log/a*", "/var//log/a*", "/var/log/a\tb",
+                  "/var/l*g/a", "/var/log/.", "/x/y/z/[ab]*.log", "/var/log/a\x7f*"]
+    for glob in candidates:
+        svc = make_service()
+        svc.servers[0].log_globs = [glob]
+        if validate_config(AppConfig(services=[svc])) == []:
+            build_pipeline(svc.servers[0], Settings(), None, "napi-scan-00c0ffee")

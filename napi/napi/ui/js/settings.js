@@ -142,7 +142,7 @@
 
   // 로그 경로 문구는 끝에 경로가 붙는다 (": /logs/x"). 경로 안의 글자로 칸을 잘못 고르지 않게 맨 앞만 본다.
   function serverField(text) {
-    if (/^로그 경로/.test(text)) return "log_globs";
+    if (/^(로그 )?경로/.test(text)) return "log_globs";
     if (/^모르는 로그 형식|사용자 정의 형식|custom|필드 번호/.test(text)) return "log_format";
     if (/호스트/.test(text)) return "host";
     if (/키 ?파일/.test(text)) return "key_file";
@@ -203,12 +203,15 @@
     return f;
   }
 
-  // napi/config.py validate_config + napi/remote/command.py split_glob과 같은 규칙.
+  // napi/config.py _glob_problem(validate_config) + napi/remote/command.py split_glob과 같은 규칙.
   function globProblem(g) {
     if (!g) return "경로를 입력해 주세요. 필요 없으면 삭제해 주세요.";
+    if (/[\x00-\x1f]/.test(g)) return "경로에 제어 문자(탭, 줄바꿈 등)를 쓸 수 없어요.";
     if (g.charAt(0) !== "/") return "'/'로 시작하는 전체 경로를 입력해 주세요.";
     var cut = g.lastIndexOf("/");
-    if (/[*?\[]/.test(g.slice(0, cut))) return "디렉터리 부분에는 * ? [ 를 쓸 수 없어요.";
+    var dir = g.slice(0, cut + 1); // 끝의 "/"까지 (파일 이름 바로 앞의 "//"도 본다)
+    if (/[*?\[]/.test(dir)) return "디렉터리 부분에는 * ? [ 를 쓸 수 없어요.";
+    if (/\/\/|\/\.\/|\/\.\.\//.test(dir)) return "경로에 // 나 . / .. 를 쓸 수 없어요.";
     if (cut === g.length - 1) return "파일 이름 패턴을 끝에 적어 주세요 (예: access.log*).";
     return null;
   }
