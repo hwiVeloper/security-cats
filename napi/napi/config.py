@@ -85,9 +85,10 @@ def _as_list(items, key: str) -> list:
     return items if isinstance(items, list) else [items]
 
 
-def _custom(cf) -> CustomFormat | None:
-    # 경로마다 따로 만든다 (한 경로를 고쳐도 다른 경로가 같이 바뀌지 않게)
-    return CustomFormat(**cf) if cf else None
+def _custom(cf, fmt: str = "custom") -> CustomFormat | None:
+    # 경로마다 따로 만든다 (한 경로를 고쳐도 다른 경로가 같이 바뀌지 않게).
+    # 서버의 custom_format은 형식이 custom인 경로만 물려받는다.
+    return CustomFormat(**cf) if cf and fmt == "custom" else None
 
 
 def _log_paths(sv: dict) -> None:
@@ -106,7 +107,7 @@ def _log_paths(sv: dict) -> None:
         raise _bad("log_glob과 log_globs를 함께 쓸 수 없습니다")
     if legacy:
         globs = _as_list(sv.pop(legacy[0]), legacy[0])
-        sv["log_paths"] = [LogPath(_str(g), default_fmt, _custom(default_cf)) for g in globs]
+        sv["log_paths"] = [LogPath(_str(g), default_fmt, _custom(default_cf, default_fmt)) for g in globs]
         return
     if "log_paths" not in sv:
         return  # 빠진 칸은 dataclass 생성이 TypeError(→ ConfigError)로 알린다
@@ -117,10 +118,11 @@ def _log_paths(sv: dict) -> None:
             if "glob" not in d:
                 raise _bad(f"log_paths 항목에 glob이 없습니다: {item!r}")
             d.setdefault("log_format", default_fmt)
-            d["custom_format"] = _custom(d.get("custom_format", default_cf))
+            d["custom_format"] = (_custom(d["custom_format"]) if "custom_format" in d
+                                  else _custom(default_cf, d["log_format"]))
             paths.append(LogPath(**d))
         else:
-            paths.append(LogPath(_str(item), default_fmt, _custom(default_cf)))
+            paths.append(LogPath(_str(item), default_fmt, _custom(default_cf, default_fmt)))
     sv["log_paths"] = paths
 
 

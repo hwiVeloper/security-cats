@@ -497,3 +497,15 @@ def test_config_log_paths_roundtrip_and_validate(tmp_path):
 def test_bad_log_paths_raise_config_error(tmp_path, server):
     with pytest.raises(ConfigError, match="설정 파일"):
         load_config(_write(tmp_path, _yaml_server(f"  - {server}\n")))
+
+
+def test_legacy_custom_format_only_inherited_by_custom_paths(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "services:\n- name: S\n  spec: {type: url, source: x, location: http://s}\n"
+        "  servers:\n  - name: W\n    host: h\n    user: u\n"
+        "    log_globs: [/a/*.log, /b/*.log]\n    log_format: webtob\n"
+        "    custom_format: {method_field: 6, path_field: 7, status_field: 9,"
+        " time_field: 4, time_format: clf}\n", encoding="utf-8")
+    paths = load_config(p).services[0].servers[0].log_paths
+    assert [x.custom_format for x in paths] == [None, None]

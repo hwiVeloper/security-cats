@@ -13,7 +13,7 @@ from napi import __main__ as entry
 from napi.api import Api
 from napi.config import load_config, save_config
 from napi.models import (
-    AggRow, AppConfig, FileStat, LogFormatDef, LogPath, Note, ServerConfig, ServerScanResult,
+    AggRow, AppConfig, CustomFormat, FileStat, LogFormatDef, LogPath, Note, ServerConfig, ServerScanResult,
     ServiceConfig, SpecOperation, SpecSource,
 )
 from napi.secrets import SessionSecrets
@@ -307,6 +307,66 @@ def test_preview_commands_uses_user_formats(env):
     res = api.preview_commands(SVC, "90")
     assert "CLIENT(" in res["WAS-01"]
     assert "CLIENT(" not in res["WAS-02"]
+
+
+def test_preview_uses_per_path_formats(env):
+    api = env["api"]
+    cfg = load_config(env["path"])
+    cfg.log_formats = [LogFormatDef("user_a", USER_A)]
+    cfg.services[0].servers[0].log_paths = [LogPath("/log/a*.log"),
+                                            LogPath("/log/b*.log", "user_a")]
+    save_config(cfg, env["path"])
+    res = api.preview_commands(SVC, "90")
+    assert "CLIENT(" in res["WAS-01"]
+    assert "CLIENT(" not in res["WAS-02"]
+
+
+def test_get_state_exposes_log_paths(env):
+    api = env["api"]
+    cfg = load_config(env["path"])
+    cfg.services[0].servers[0].log_paths = [
+        LogPath("/log/a*.log"), LogPath("/log/b*.log", "custom", CustomFormat(6, 7, 9, 4, "clf"))]
+    save_config(cfg, env["path"])
+    sv = api.get_state()["config"]["services"][0]["servers"][0]
+    assert sv["log_paths"] == [
+        {"glob": "/log/a*.log", "log_format": "webtob", "custom_format": None},
+        {"glob": "/log/b*.log", "log_format": "custom",
+         "custom_format": {"method_field": 6, "path_field": 7, "status_field": 9,
+                           "time_field": 4, "time_format": "clf"}}]
+    for k in ("log_glob", "log_globs", "log_format", "custom_format"):
+        assert k not in sv
+
+
+def test_scan_one_server_bad_path_format_others_continue(env):
+    """진짜 Collector: 경로 하나의 형식이 잘못된 서버만 설정 오류로 실패하고 나머지는 계속된다."""
+    from napi.collector import Collector
+
+    class Refuse:  # 접속 단계까지 온 서버는 접속 실패로 끝난다
+        def set_missing_host_key_policy(self, p): pass
+        def load_host_keys(self, f): pass
+        def connect(self, **kw): raise OSError("no route")
+        def close(self): pass
+
+    cfg = load_config(env["path"])
+    cfg.services[0].servers[0].log_paths = [LogPath("/log/a*.log"), LogPath("/log/b*.log", "nope")]
+    save_config(cfg, env["path"])
+    got = {}
+
+    class Spy(Collector):
+        def collect(self, servers, since, progress, cancel):
+            res = super().collect(servers, since, progress, cancel)
+            got.update({r.server: r.error for r in res})
+            return res
+
+    for u, h, p in (("app", "10.0.0.1", 22), ("app", "10.0.0.2", 22), ("web", "10.0.0.3", 2222)):
+        env["secrets"].set_password(u, h, p, PW)
+    api = env["make"](collector_factory=lambda settings, secrets, prompt, known_hosts, *, formats:
+                      Spy(settings, secrets, prompt, known_hosts,
+                          client_factory=Refuse, formats=formats))
+    scan_id = api.start_scan(SVC, "365")["scan_id"]
+    wait_phase(api, scan_id)
+    assert got["WAS-01"] == "설정 오류: 경로 /log/b*.log: 모르는 로그 형식이에요: nope"
+    assert got["WAS-02"] == got["WAS-03"] == "접속할 수 없어요"
 
 
 def test_start_scan_passes_user_formats(env):

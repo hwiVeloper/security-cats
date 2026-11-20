@@ -30,6 +30,7 @@ _IONICE = "$(command -v ionice >/dev/null 2>/dev/null && echo ionice -c3)"
 _FILE_LOOP = (
     "{ p=; while IFS= read -r l; do "
     'n=${l%%/*}; f=${l#*/}; [ "$f" = "$p" ] && continue; p=$f; '
+    "case $f in /*) ;; *) continue;; esac; "
     r"""if [ ! -r "$f" ]; then printf '\n\001E%s\tunreadable\t%s\n' "$0" "$f"; continue; fi; """
     r"""printf '\n\001F%s\t%s\t%s\n' "$0" "$n" "$f"; """
     r"""gzip -dcf -- "$f" 2>/dev/null || printf '\n\001E%s\tdecompress_failed\t%s\n' "$0" "$f"; """

@@ -294,3 +294,10 @@ def test_pipeline_multiple_globs_structure():
 def test_pipeline_requires_a_glob():
     with pytest.raises(ValueError, match="로그 경로를 하나 이상"):
         build_pipeline(make_server(log_globs=[]), Settings(), None, TOKEN)
+
+
+def test_file_loop_skips_non_absolute_names():
+    """newline이 든 파일 이름의 조각이 원격 cwd 기준 상대 경로로 열리지 않는다."""
+    script = build_pipeline(make_server(), Settings(), None, TOKEN)
+    assert "case $f in /*) ;; *) continue;; esac;" in script
+    assert script.index("case $f in /*)") < script.index('[ ! -r "$f" ]')
