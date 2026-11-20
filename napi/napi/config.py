@@ -208,7 +208,6 @@ def _below(value, minimum: int) -> bool:
     return isinstance(value, bool) or not isinstance(value, int) or value < minimum
 
 
-_DIR_GLOB_CHARS = "*?["  # napi.remote.command.split_glob과 같은 규칙
 _GLOB_CONTROL_RE = re.compile("[\x00-\x1f]")  # C0 제어 문자 (탭, 줄바꿈, NUL 포함)
 _SETTINGS_MIN = {"max_parallel_servers": 1, "remote_timeout_sec": 1, "max_rows": 1, "top_404": 0}
 
@@ -280,8 +279,7 @@ def _glob_problem(glob: str) -> str | None:
     if not glob.startswith("/"):
         return f"로그 경로는 '/'로 시작해야 합니다: {glob}"
     directory = glob[:glob.rfind("/") + 1]  # 끝의 "/"까지 (파일 이름 바로 앞의 "//"도 본다)
-    if any(ch in directory for ch in _DIR_GLOB_CHARS):
-        return f"로그 경로의 디렉터리 부분에는 * ? [ 를 쓸 수 없습니다: {glob}"
+    # 디렉터리 부분의 * ? [ 는 허용한다 (napi.remote.command.find_args가 깊이를 고정해 찾는다)
     # 같은 디렉터리를 다른 글자로 쓰면 find 출력이 달라져 같은 파일을 두 번 읽는다 (D2)
     if any(part in directory for part in ("//", "/./", "/../")):
         return f"경로에 // 나 . / .. 를 쓸 수 없어요: {glob}"

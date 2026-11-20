@@ -695,6 +695,25 @@ def test_pipeline_parity_webtob_error(bash, tmp_path, since):
         assert secret not in blob, secret
 
 
+def test_pipeline_directory_wildcard_fixed_depth(bash, tmp_path):
+    """디렉터리 와일드카드: 정확한 깊이의 파일만, 더 깊거나 얕은 파일은 읽지 않는다."""
+    d = tmp_path.resolve()
+    data = (FIXTURES / "webtob_access.log").read_bytes()
+    files = []
+    for app in ("app1", "app2"):
+        (d / app / "logs").mkdir(parents=True)
+        files += write_log(d / app / "logs", "access.log", data)
+    (d / "app3" / "logs" / "old").mkdir(parents=True)
+    (d / "app3" / "logs" / "old" / "access.log").write_bytes(data)   # 한 단계 더 깊음: 제외
+    (d / "access.log").write_bytes(data)                              # 얕음: 제외
+    (d / "app4").mkdir()
+    (d / "app4" / "logs").write_bytes(data)                           # 디렉터리 자리의 파일: 제외
+    server = server_globs([posix(d) + "/*/logs/access.log*"], "webtob")
+    out = parity(bash, server, files, "webtob")
+    paths = sorted(x[1] for x in f_lines(out))
+    assert paths == sorted(_b(f) for f, _ in files)
+
+
 def test_pipeline_no_status_format(bash, tmp_path):
     d = tmp_path.resolve()
     fmts = [LogFormatDef("ns", '%t "%r"')]

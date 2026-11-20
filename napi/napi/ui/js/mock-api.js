@@ -303,7 +303,6 @@
           var pl = sl + ": 경로 " + glob;
           if (/[\x00-\x1f]/.test(glob)) errors.push(sl + ": 로그 경로에 제어 문자를 쓸 수 없습니다: " + glob);
           else if (glob.charAt(0) !== "/") errors.push(sl + ": 로그 경로는 '/'로 시작해야 합니다: " + glob);
-          else if (/[*?\[]/.test(dir)) errors.push(sl + ": 로그 경로의 디렉터리 부분에는 * ? [ 를 쓸 수 없습니다: " + glob);
           else if (/\/\/|\/\.\/|\/\.\.\//.test(dir)) errors.push(sl + ": 경로에 // 나 . / .. 를 쓸 수 없어요: " + glob);
           else if (dir.length === glob.length) errors.push(sl + ": 로그 경로를 쓸 수 없습니다 — 파일 이름 패턴이 비어 있어요: " + glob);
           if (!known[lp.log_format]) errors.push(pl + ": 모르는 로그 형식이에요: " + lp.log_format);

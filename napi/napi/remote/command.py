@@ -43,18 +43,37 @@ _GLOB_EMPTY = r"""printf '\n\001E%s\tglob_empty\t%s\n' "$0" {}"""
 def split_glob(log_glob: str) -> tuple[str, str]:
     """"/webtob/log/access.log*" -> ("/webtob/log", "access.log*").
 
-    절대 경로만 받고, 디렉터리 부분에는 glob 문자를 허용하지 않는다. 그래서 find에
-    넘기는 디렉터리는 항상 "/"로 시작하고 옵션(-delete 등)으로 읽힐 수 없다.
+    절대 경로만 받는다. 디렉터리 부분에도 glob 문자(* ? [)를 쓸 수 있다 (find_args 참고).
     """
     if not isinstance(log_glob, str) or not log_glob.startswith("/"):
         raise ValueError(f"로그 경로는 /로 시작하는 절대 경로여야 해요: {log_glob!r}")
     directory, _, pattern = log_glob.rpartition("/")
     directory = directory or "/"
-    if any(ch in directory for ch in _GLOB_CHARS):
-        raise ValueError(f"디렉터리 부분에는 * ? [ 를 쓸 수 없어요: {log_glob!r}")
     if pattern == "":
         raise ValueError(f"파일 이름 패턴이 비어 있어요: {log_glob!r}")
     return directory, pattern
+
+
+def find_args(log_glob: str) -> list[str]:
+    """glob 하나를 찾는 find 인자 (각 값은 shlex.quote 됨, -newermt 제외).
+
+    - 디렉터리에 glob 문자가 없으면: find <dir> -maxdepth 1 -type f -name <pattern>
+    - 있으면: 첫 glob 조각 앞까지를 시작 디렉터리로 쓰고 깊이를 고정한다.
+      "/data/*/logs/a*" -> find /data -mindepth 3 -maxdepth 3 -type f -path "/data/*/logs/a*"
+      find의 -path에서는 * ? 가 "/"와도 맞지만, 깊이가 고정되면 경로의 "/" 개수가 패턴의
+      "/" 개수와 같아져 와일드카드가 "/"를 먹을 수 없다 (조각별 매칭과 같아진다).
+    시작 디렉터리는 항상 "/"로 시작하므로 find 옵션(-delete 등)으로 읽힐 수 없다.
+    """
+    directory, pattern = split_glob(log_glob)
+    if not any(ch in directory for ch in _GLOB_CHARS):
+        return ["find", shlex.quote(directory), "-maxdepth", "1", "-type", "f",
+                "-name", shlex.quote(pattern)]
+    parts = log_glob.split("/")[1:]  # 맨 앞 "" 제외
+    first = next(i for i, part in enumerate(parts) if any(ch in part for ch in _GLOB_CHARS))
+    start = "/" + "/".join(parts[:first])
+    depth = len(parts) - first
+    return ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
+            "-type", "f", "-path", shlex.quote(log_glob)]
 
 
 def _int(name: str, value: object, minimum: int) -> int:
@@ -104,12 +123,11 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
     finds, empty_marks, lists, seen = [], [], [], set()
     for i, lp in enumerate(paths, 1):
         glob = lp.glob
-        directory, pattern = split_glob(glob)
+        base = find_args(glob)  # 검증도 여기서 (절대 경로, 파일 이름 패턴)
         if glob in seen:
             continue
         seen.add(glob)
-        find = ["find", shlex.quote(directory), "-maxdepth", "1", "-type", "f",
-                "-name", shlex.quote(pattern), *newermt]
+        find = [*base, *newermt]
         finds.append(f"g{i}=$({' '.join(find)} 2>/dev/null);")
         empty_marks.append(f'[ -n "$g{i}" ] || ' + _GLOB_EMPTY.format(shlex.quote(glob)) + ";")
         lists.append(f'[ -z "$g{i}" ] || printf \'%s\\n\' "$g{i}" | '

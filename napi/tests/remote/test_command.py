@@ -45,8 +45,7 @@ def test_split_glob():
 
 
 @pytest.mark.parametrize("log_glob", [
-    "-delete/x", "access.log*", "./access.log", "", "/var/lo*g/x", "/var/lo?/x",
-    "/var/[l]og/x", "/var/log/",
+    "-delete/x", "access.log*", "./access.log", "", "/var/log/",
 ])
 def test_split_glob_rejects_unsafe(log_glob):
     with pytest.raises(ValueError):
@@ -301,3 +300,33 @@ def test_file_loop_skips_non_absolute_names():
     script = build_pipeline(make_server(), Settings(), None, TOKEN)
     assert "case $f in /*) ;; *) continue;; esac;" in script
     assert script.index("case $f in /*)") < script.index('[ ! -r "$f" ]')
+
+
+# ---- 디렉터리 부분의 와일드카드 ----
+
+def test_find_args_plain_directory_unchanged():
+    from napi.remote.command import find_args
+    assert find_args("/webtob/log/access.log*") == [
+        "find", "/webtob/log", "-maxdepth", "1", "-type", "f", "-name", "'access.log*'"]
+
+
+@pytest.mark.parametrize("glob,start,depth", [
+    ("/data/*/logs/access.log*", "/data", 3),
+    ("/*/logs/a.log", "/", 3),
+    ("/var/log/app?/x/*.log", "/var/log", 3),
+    ("/var/[ab]*/a", "/var", 2),
+])
+def test_find_args_directory_wildcards(glob, start, depth):
+    from napi.remote.command import find_args
+    args = find_args(glob)
+    assert args == ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
+                    "-type", "f", "-path", shlex.quote(glob)]
+    assert shlex.split(" ".join(args))[-1] == glob  # 셸을 거쳐도 패턴 그대로 (펼쳐지지 않음)
+
+
+def test_find_args_hostile_directory_glob_is_quoted():
+    from napi.remote.command import find_args
+    glob = "/data/*$(id)`x`;rm -rf ~/a*"
+    words = shlex.split(" ".join(find_args(glob)))
+    assert words[1] == "/data" and words[-1] == glob
+    build_pipeline(make_server(log_globs=[glob]), Settings(), None, TOKEN)  # 거부하지 않고 인용만

@@ -80,7 +80,7 @@ def test_validate():
     assert _errs(lambda s: setattr(s.servers[0], "host", ""))
     assert _errs(lambda s: setattr(s.servers[0], "auth", "key"))  # key_file 없음
     assert _errs(lambda s: setattr(s.servers[0].log_paths[0], "log_format", "custom"))
-    assert _errs(lambda s: _set_globs(s, ["/var/*/log/access.log*"]))
+    assert not _errs(lambda s: _set_globs(s, ["/var/*/log/access.log*"]))  # 디렉터리 와일드카드 허용
     assert _errs(lambda s: _set_globs(s, ["var/log/access.log"]))
     # 정상 custom
     ok = make_service()
@@ -350,9 +350,11 @@ def test_validate_log_globs():
     assert len(errs) == 1 and "로그 경로를 하나 이상" in errs[0] and "web1" in errs[0]
     ok = ["/var/log/a/access.log*", "/var/log/b/access.log*"]
     assert _errs(lambda s: _set_globs(s, ok)) == []
-    for bad in ("var/log/access.log", "/var/*/log/access.log*", "/var/lo?/x", "/var/[l]og/x"):
+    for bad in ("var/log/access.log",):
         errs = _errs(lambda s: _set_globs(s, [ok[0], bad]))
         assert len(errs) == 1 and bad in errs[0], (bad, errs)
+    for good in ("/var/*/log/access.log*", "/var/lo?/x", "/var/[l]og/x"):  # 디렉터리 와일드카드 허용
+        assert _errs(lambda s: _set_globs(s, [ok[0], good])) == [], good
 
 
 # ---- 최종 리뷰 D1: split_glob 규칙과 제어 문자 / D2: // . .. 가 든 디렉터리 ----
