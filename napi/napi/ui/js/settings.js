@@ -3,6 +3,7 @@
  * 저장할 때는 get_state를 다시 불러 그 시점의 메모(notes)를 서비스 이름별로 옮겨 담는다.
  * (설정 화면을 연 뒤에 저장된 메모가 사라지지 않게. 이름을 바꾼 서비스는 원래 이름의 메모를 가져간다.)
  * 로그 형식 탭은 formats.js(NapiFormats)가 그린다. 형식 정의는 log_formats로 함께 저장한다.
+ * 로그 형식은 서버가 아니라 로그 경로 줄마다 고른다 (서버의 log_paths: [{glob, log_format, custom_format}]).
  *
  * 비밀번호·키파일 암호 칸: 값은 그 입력 칸(DOM의 value 속성 아님)에만 있고 초안·설정 dict·localStorage에는
  * 넣지 않는다. 다시 그려도 값이 남도록 서버마다 같은 입력 칸 노드를 다시 쓴다 (ui.secrets).
@@ -40,16 +41,34 @@
 
   // ------------------------------------------------------------ 초안 (draft)
 
+  // 로그 경로 한 줄: { glob, log_format, custom_format }. custom_format은 형식을 바꿔도 초안에 남겨 두고
+  // (다시 "직접 지정"을 고르면 되살아난다) 저장할 때 log_format이 custom인 경로만 보낸다.
+  function normPath(p, fmt, custom) {
+    if (p === null || typeof p !== "object") p = { glob: p };
+    return {
+      glob: p.glob === null || p.glob === undefined ? "" : String(p.glob),
+      log_format: p.log_format || fmt || "webtob",
+      custom_format: clone(p.custom_format !== undefined ? p.custom_format : custom) || null
+    };
+  }
+
   function normServer(sv) {
     sv = clone(sv) || {};
+    var paths;
+    if (Array.isArray(sv.log_paths) && sv.log_paths.length) {
+      paths = sv.log_paths.map(function (p) { return normPath(p, sv.log_format, sv.custom_format); });
+    } else if (Array.isArray(sv.log_globs) && sv.log_globs.length) {
+      // 예전 모양(get_state는 log_paths만 보낸다): 경로마다 서버 형식을 물려받는다
+      paths = sv.log_globs.map(function (g) { return normPath(g, sv.log_format, sv.custom_format); });
+    } else {
+      paths = [normPath("", sv.log_format, sv.custom_format)];
+    }
     return {
       name: sv.name || "", host: sv.host || "", user: sv.user || "",
-      log_globs: Array.isArray(sv.log_globs) && sv.log_globs.length ? sv.log_globs.map(String) : [""],
+      log_paths: paths,
       port: sv.port === undefined || sv.port === null ? 22 : sv.port,
       auth: sv.auth === "key" ? "key" : "password",
-      key_file: sv.key_file || null,
-      log_format: sv.log_format || "webtob",
-      custom_format: sv.custom_format || null
+      key_file: sv.key_file || null
     };
   }
 
@@ -94,8 +113,11 @@
     return ui.draft.removed || ui.draft.services.some(isDirty) || F.snapshot(ui.draft.formats) !== ui.draft.formatsSnap ||
       ui.secrets.some(function (r) { return r.node.value !== ""; });
   }
-  function eachServer(fn) {
-    ui.draft.services.forEach(function (w) { w.svc.servers.forEach(fn); });
+  // 초안의 모든 서버의 모든 로그 경로 (형식 이름 바꾸기가 쓴다).
+  function eachPath(fn) {
+    ui.draft.services.forEach(function (w) {
+      w.svc.servers.forEach(function (sv) { sv.log_paths.forEach(fn); });
+    });
   }
   function selected() {
     var list = ui.draft.services;
@@ -133,17 +155,18 @@
     (e[fieldName] || (e[fieldName] = [])).push(msg);
   }
   function hasFmtErr() { return Object.keys(ui.fmtErrors).length > 0; }
-  function dropGlobErrs(w, i) {
+  // 경로 줄을 넣거나 빼면 줄 번호가 밀리므로 그 서버의 경로 오류("glob:N", "fmt:N", 목록 전체)를 비운다.
+  function dropPathErrs(w, i) {
     var e = ui.errors[w.key];
     var b = e && e.servers[i];
     if (!b) return;
-    Object.keys(b).forEach(function (k) { if (/^glob:|^log_globs$/.test(k)) delete b[k]; });
+    Object.keys(b).forEach(function (k) { if (/^glob:|^fmt:|^log_paths$/.test(k)) delete b[k]; });
   }
 
   // 로그 경로 문구는 끝에 경로가 붙는다 (": /logs/x"). 경로 안의 글자로 칸을 잘못 고르지 않게 맨 앞만 본다.
+  // 경로의 형식 문구("경로 /logs/x: 모르는 로그 형식이에요: …")는 pathField가 먼저 본다.
   function serverField(text) {
-    if (/^(로그 )?경로/.test(text)) return "log_globs";
-    if (/^모르는 로그 형식|사용자 정의 형식|custom|필드 번호/.test(text)) return "log_format";
+    if (/^(로그 )?경로|^모르는 로그 형식|사용자 정의 형식|custom|필드 번호/.test(text)) return "log_paths";
     if (/호스트/.test(text)) return "host";
     if (/키 ?파일/.test(text)) return "key_file";
     if (/서버 이름/.test(text)) return "name";
@@ -173,7 +196,7 @@
       var placed = false;
       servicesNamed(m[1]).forEach(function (w) {
         for (var i = 0; i < w.svc.servers.length; i++) {
-          if (trim(w.svc.servers[i].name) === m[2]) { addErr(w, i, globField(w.svc.servers[i], m[3]), m[3]); placed = true; return; }
+          if (trim(w.svc.servers[i].name) === m[2]) { addErr(w, i, pathField(w.svc.servers[i], m[3]), m[3]); placed = true; return; }
         }
       });
       if (placed) return;
@@ -192,15 +215,26 @@
     ui.top.push(msg);
   }
 
-  // "로그 경로는 ...: /logs/x" → 그 경로 줄("glob:<번호>"). 줄을 못 찾으면 경로 목록 전체 칸.
-  function globField(sv, text) {
+  // 서버 문구 중 경로가 들어 있는 것을 그 경로 줄에 붙인다. 줄을 못 찾으면 경로 목록 전체 칸.
+  //   "경로 /logs/x: 모르는 로그 형식이에요: a" (형식 오류) → "fmt:<번호>"
+  //   "로그 경로는 ...: /logs/x" (경로 오류, 끝에 경로)    → "glob:<번호>"
+  // 경로 안에 ": "가 있을 수 있어 문구를 자르지 않고 초안의 경로와 맞춰 본다 (가장 긴 경로가 이긴다).
+  function pathField(sv, text) {
+    var paths = sv.log_paths, best = -1, bestLen = -1, i, g;
+    if (/^경로 /.test(text)) {
+      for (i = 0; i < paths.length; i++) {
+        g = trim(paths[i].glob);
+        if (g.length > bestLen && text.indexOf("경로 " + g + ": ") === 0) { best = i; bestLen = g.length; }
+      }
+      return best >= 0 ? "fmt:" + best : "log_paths";
+    }
     var f = serverField(text);
-    if (f !== "log_globs") return f;
-    var cut = text.indexOf(": ");
-    if (cut < 0) return f;
-    var glob = text.slice(cut + 2);
-    for (var i = 0; i < sv.log_globs.length; i++) if (trim(sv.log_globs[i]) === glob) return "glob:" + i;
-    return f;
+    if (f !== "log_paths") return f;
+    for (i = 0; i < paths.length; i++) {
+      g = ": " + trim(paths[i].glob);
+      if (g.length > bestLen && text.length >= g.length && text.slice(text.length - g.length) === g) { best = i; bestLen = g.length; }
+    }
+    return best >= 0 ? "glob:" + best : f;
   }
 
   // napi/config.py _glob_problem(validate_config) + napi/remote/command.py split_glob과 같은 규칙.
@@ -234,16 +268,16 @@
         seen["#" + nm] = true;
         if (!posInt(sv.port, 65535)) add(w, i, "port", "포트는 1~65535 사이 숫자로 입력해 주세요.");
         if (!trim(sv.user)) add(w, i, "user", "접속 계정을 입력해 주세요.");
-        if (sv.log_format === "custom" && !customPayload(sv.custom_format)) {
-          add(w, i, "log_format", "필드 번호는 1 이상의 숫자로 모두 입력해 주세요.");
-        }
         var globs = {};
-        sv.log_globs.forEach(function (g, gi) {
-          g = trim(g);
+        sv.log_paths.forEach(function (p, gi) {
+          var g = trim(p.glob);
           var problem = globProblem(g);
           if (!problem && globs["#" + g]) problem = "같은 경로가 이미 있어요.";
           globs["#" + g] = true;
           if (problem) add(w, i, "glob:" + gi, problem);
+          if (p.log_format === "custom" && !customPayload(p.custom_format)) {
+            add(w, i, "fmt:" + gi, "필드 번호는 1 이상의 숫자로 모두 입력해 주세요.");
+          }
         });
       });
     });
@@ -265,14 +299,18 @@
     return out;
   }
 
+  // 경로마다 형식을 보낸다. 서버 단위 log_globs / log_format / custom_format은 보내지 않는다
+  // (log_paths와 함께 오면 백엔드가 설정 오류로 본다).
+  function pathPayload(p) {
+    var custom = p.log_format === "custom";
+    return { glob: trim(p.glob), log_format: p.log_format, custom_format: custom ? customPayload(p.custom_format) : null };
+  }
+
   function serverPayload(sv) {
-    var custom = sv.log_format === "custom";
     return {
-      name: trim(sv.name), host: trim(sv.host), user: trim(sv.user), log_globs: sv.log_globs.map(trim),
+      name: trim(sv.name), host: trim(sv.host), user: trim(sv.user), log_paths: sv.log_paths.map(pathPayload),
       port: posInt(sv.port, 65535), auth: sv.auth,
-      key_file: sv.auth === "key" ? (trim(sv.key_file) || null) : null,
-      log_format: sv.log_format,
-      custom_format: custom ? customPayload(sv.custom_format) : null
+      key_file: sv.auth === "key" ? (trim(sv.key_file) || null) : null
     };
   }
 
@@ -556,7 +594,7 @@
       entries: ui.draft.formats,
       services: ui.draft.services.map(function (w) { return w.svc; }),
       errorsOf: function (f) { return ui.fmtErrors[f.key]; },
-      onRename: function (f, text) { F.rename(ui.draft.formats, f, text, eachServer); changed(); },
+      onRename: function (f, text) { F.rename(ui.draft.formats, f, text, eachPath); changed(); },
       onChange: changed,
       onAdd: function () {
         F.create(ui.draft.formats);
@@ -710,35 +748,11 @@
     drawSecret();
     ui.secretViews.push(drawSecret);
 
-    var c = sv.custom_format || {};
-    var customBox = el("div", { class: "fields full", hidden: sv.log_format !== "custom", style: "grid-column:1/-1" },
-      CUSTOM_FIELDS.map(function (f) {
-        return field(f[1], input("number", c[f[0]], function (v) {
-          sv.custom_format = sv.custom_format || { time_format: "clf" };
-          sv.custom_format[f[0]] = toNum(v); changed();
-        }, { min: "1", step: "1", inputmode: "numeric" }));
-      }),
-      field("시간 형식", select(TIME_FORMATS, c.time_format || "clf", function (v) {
-        sv.custom_format = sv.custom_format || {};
-        sv.custom_format.time_format = v; changed();
-      })),
-      el("span", { class: "muted small", style: "grid-column:1/-1" }, "필드 번호는 줄을 공백으로 나눈 칸의 순서예요 (1부터)."),
-      el("span", { class: "muted small", style: "grid-column:1/-1",
-        text: "새로 설정한다면 '로그 형식' 메뉴에서 형식을 추가해 쓰는 걸 권장해요 (필드 번호 방식은 예전 설정 호환용이에요)" }));
-
     var legendName = el("span", null, sv.name || "서버 " + (i + 1));
     var nameInput = input("text", sv.name, function (v) {
       sv.name = v; changed(); legendName.textContent = v || "서버 " + (i + 1); redrawSecrets();
     });
 
-    var sample = F.sampleBox(function (line) {
-      var custom = null;
-      if (sv.log_format === "custom") {
-        custom = customPayload(sv.custom_format);
-        if (!custom) return "직접 지정 형식의 필드 번호를 먼저 입력해 주세요";
-      }
-      return api().test_log_line(sv.log_format, custom, line, F.payload(ui.draft.formats));
-    });
     var card = el("fieldset", { class: "server-card" }, el("legend", null, legendName),
       cardErr(errText(E, "_")),
       el("div", { class: "fields" },
@@ -754,68 +768,111 @@
           redrawSecrets();
         })),
         pwField, keyField, ppField, secretBox,
-        globList(w, sv, i, E),
-        field("로그 형식", F.select(ui.draft.formats, sv.log_format, function (v) {
-          sv.log_format = v; changed(); customBox.hidden = v !== "custom";
-        }), errText(E, "log_format")),
-        customBox),
+        pathList(w, sv, i, E)),
       el("div", { class: "row-btns" },
-        F.toggleButton("샘플 줄로 형식 테스트", sample),
         el("button", { type: "button", class: "btn small danger", onclick: function () {
           w.svc.servers.splice(i, 1);
           dropSecrets([sv]);
           delete ui.errors[w.key];
           changed();
           render(true);
-        } }, "서버 삭제")),
-      sample);
+        } }, "서버 삭제")));
     return card;
   }
 
-  // 로그 경로 목록: 경로마다 입력 칸 + 삭제 (마지막 하나는 지울 수 없다). 오류는 그 경로 아래에 보인다.
-  function globList(w, sv, i, E) {
+  // 로그 경로 목록: 줄마다 [경로 입력 칸] [로그 형식 ▾] [삭제] (마지막 하나는 지울 수 없다).
+  // "직접 지정"이면 그 줄 아래에 필드 번호 칸이 열리고, 샘플 줄 테스트도 줄마다 있다.
+  // 경로 오류와 그 경로의 형식 오류는 그 줄 아래에 보인다.
+  function pathList(w, sv, i, E) {
     var box = el("div", { class: "field full glob-list", role: "group" });
     var labelId = "set-f-" + (++fieldSeq);
     box.setAttribute("aria-labelledby", labelId);
     function draw(focusIdx) {
       clear(box);
-      box.appendChild(el("span", { class: "lbl", id: labelId }, "로그 파일 (glob)"));
+      box.appendChild(el("span", { class: "lbl", id: labelId }, "로그 파일 (glob)과 로그 형식"));
       var inputs = [];
-      sv.log_globs.forEach(function (g, gi) {
-        var err = errText(E, "glob:" + gi);
-        var inp = input("text", g, function (v) { sv.log_globs[gi] = v; changed(); },
-          { placeholder: "/logs/webtob/access.log*", "aria-label": "로그 경로 " + (gi + 1) });
-        inputs.push(inp);
-        var errNode = null;
-        if (err) {
-          var errId = "set-f-" + (++fieldSeq) + "-err";
-          inp.setAttribute("aria-invalid", "true");
-          inp.setAttribute("aria-describedby", errId);
-          errNode = el("span", { class: "field-err", id: errId }, err);
-        }
-        box.appendChild(el("div", { class: "glob-row" }, inp,
-          el("button", { type: "button", class: "btn small", disabled: sv.log_globs.length <= 1,
-            "aria-label": "로그 경로 " + (gi + 1) + " 삭제", onclick: function () {
-              sv.log_globs.splice(gi, 1);
-              dropGlobErrs(w, i);
-              changed();
-              draw(Math.min(gi, sv.log_globs.length - 1));
-            } }, "삭제")));
-        if (errNode) box.appendChild(errNode);
+      sv.log_paths.forEach(function (p, gi) {
+        var item = pathRow(w, sv, i, E, p, gi, function (next) {
+          sv.log_paths.splice(gi, 1);
+          dropPathErrs(w, i);
+          changed();
+          draw(next);
+        });
+        inputs.push(item.input);
+        box.appendChild(item.node);
       });
-      var allErr = errText(E, "log_globs");
+      var allErr = errText(E, "log_paths");
       if (allErr) box.appendChild(el("span", { class: "field-err" }, allErr));
       box.appendChild(el("div", null, el("button", { type: "button", class: "btn small", onclick: function () {
-        sv.log_globs.push("");
-        dropGlobErrs(w, i);
+        // 바로 위 경로의 형식(과 필드 번호)을 물려받는다
+        var prev = sv.log_paths[sv.log_paths.length - 1];
+        sv.log_paths.push(prev ? normPath({ glob: "", log_format: prev.log_format, custom_format: prev.custom_format })
+          : normPath("", "webtob", null));
+        dropPathErrs(w, i);
         changed();
-        draw(sv.log_globs.length - 1);
+        draw(sv.log_paths.length - 1);
       } }, "＋ 경로 추가")));
       box.appendChild(el("span", { class: "muted small" }, GLOB_HINT));
       if (focusIdx !== undefined && inputs[focusIdx]) inputs[focusIdx].focus();
     }
     draw();
     return box;
+  }
+
+  // 경로 한 줄. onDelete(다음에 포커스할 줄 번호). → { node, input }
+  function pathRow(w, sv, i, E, p, gi, onDelete) {
+    var n = gi + 1;
+    var globErr = errText(E, "glob:" + gi);
+    var fmtErr = errText(E, "fmt:" + gi);
+    var inp = input("text", p.glob, function (v) { p.glob = v; changed(); },
+      { placeholder: "/logs/webtob/access.log*", "aria-label": "로그 경로 " + n });
+    var c = p.custom_format || {};
+    var customBox = el("div", { class: "fields path-custom", hidden: p.log_format !== "custom" },
+      CUSTOM_FIELDS.map(function (f) {
+        return field(f[1], input("number", c[f[0]], function (v) {
+          p.custom_format = p.custom_format || { time_format: "clf" };
+          p.custom_format[f[0]] = toNum(v); changed();
+        }, { min: "1", step: "1", inputmode: "numeric" }));
+      }),
+      field("시간 형식", select(TIME_FORMATS, c.time_format || "clf", function (v) {
+        p.custom_format = p.custom_format || {};
+        p.custom_format.time_format = v; changed();
+      })),
+      el("span", { class: "muted small", style: "grid-column:1/-1" }, "필드 번호는 줄을 공백으로 나눈 칸의 순서예요 (1부터)."),
+      el("span", { class: "muted small", style: "grid-column:1/-1",
+        text: "새로 설정한다면 '로그 형식' 메뉴에서 형식을 추가해 쓰는 걸 권장해요 (필드 번호 방식은 예전 설정 호환용이에요)" }));
+    var fmtSel = F.select(ui.draft.formats, p.log_format, function (v) {
+      p.log_format = v; changed(); customBox.hidden = v !== "custom";
+    });
+    fmtSel.setAttribute("aria-label", "로그 경로 " + n + " 형식");
+    var errs = [];
+    function invalid(control, text) {
+      var errId = "set-f-" + (++fieldSeq) + "-err";
+      control.setAttribute("aria-invalid", "true");
+      control.setAttribute("aria-describedby", errId);
+      errs.push(el("span", { class: "field-err", id: errId }, text));
+    }
+    if (globErr) invalid(inp, globErr);
+    if (fmtErr) invalid(fmtSel, fmtErr);
+    var sample = F.sampleBox(function (line) {
+      var custom = null;
+      if (p.log_format === "custom") {
+        custom = customPayload(p.custom_format);
+        if (!custom) return "직접 지정 형식의 필드 번호를 먼저 입력해 주세요";
+      }
+      return api().test_log_line(p.log_format, custom, line, F.payload(ui.draft.formats));
+    });
+    var node = el("div", { class: "path-item" },
+      el("div", { class: "glob-row" }, inp, fmtSel,
+        el("button", { type: "button", class: "btn small", disabled: sv.log_paths.length <= 1,
+          "aria-label": "로그 경로 " + n + " 삭제", onclick: function () {
+            onDelete(Math.min(gi, sv.log_paths.length - 2));
+          } }, "삭제")),
+      errs,
+      customBox,
+      el("div", { class: "path-tools" }, F.toggleButton("샘플 줄로 형식 테스트", sample)),
+      sample);
+    return { node: node, input: inp };
   }
 
   function pickKeyFile(sv, keyInput) {
@@ -949,7 +1006,7 @@
     ui.errors = {};
     ui.fmtErrors = {};
     ui.top = [];
-    F.settle(ui.draft.formats, eachServer);
+    F.settle(ui.draft.formats, eachPath);
     var n = validateDraft();
     if (n) { showErrors("입력값을 확인해 주세요 (" + n + "곳)"); return; }
     setBusy(true);

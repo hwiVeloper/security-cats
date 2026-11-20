@@ -1,10 +1,11 @@
 /* 설정 화면의 "로그 형식" 탭: 기본 제공 형식(읽기 전용)과 사용자 형식(이름 + LogFormat 패턴). 전역 NapiFormats.
  * settings.js가 초안(draft)과 입력 칸 도우미(input, field)를 넘겨서 부른다. 이 파일은 따로 상태를 갖지 않는다.
+ * 형식은 서버가 아니라 로그 경로마다 고른다 (서버의 log_paths: [{glob, log_format, custom_format}]).
  *
  * 초안의 형식 항목: { key, name, pattern, cur }
  *   name: 입력 칸 그대로의 이름 (편집 중이라 비었거나 겹칠 수 있다)
- *   cur:  초안의 서버들이 log_format으로 가리키는 이름. 이름을 고치면 겹치지 않는 올바른 이름일 때만
- *         cur와 그 형식을 쓰는 서버의 log_format을 함께 바꾼다 (편집 도중에 다른 형식과 합쳐지지 않게).
+ *   cur:  초안의 경로들이 log_format으로 가리키는 이름. 이름을 고치면 겹치지 않는 올바른 이름일 때만
+ *         cur와 그 형식을 쓰는 경로의 log_format을 함께 바꾼다 (편집 도중에 다른 형식과 합쳐지지 않게).
  */
 (function (root) {
   "use strict";
@@ -60,25 +61,25 @@
     return f;
   }
 
-  // 이름 칸이 바뀌었을 때. eachServer(fn)은 초안의 모든 서버에 fn(sv)를 부른다.
-  function rename(entries, f, text, eachServer) {
+  // 이름 칸이 바뀌었을 때. eachPath(fn)은 초안의 모든 서버의 모든 로그 경로에 fn(path)를 부른다.
+  function rename(entries, f, text, eachPath) {
     f.name = text;
     var nn = trim(text);
     if (!nn || nn === f.cur || isReserved(nn)) return;
     for (var i = 0; i < entries.length; i++) {
       var o = entries[i];
-      if (o !== f && (trim(o.name) === nn || o.cur === nn)) return; // 겹치면 서버는 그대로 둔다
+      if (o !== f && (trim(o.name) === nn || o.cur === nn)) return; // 겹치면 경로는 그대로 둔다
     }
     var old = f.cur;
-    if (old && !isReserved(old)) eachServer(function (sv) { if (sv.log_format === old) sv.log_format = nn; });
+    if (old && !isReserved(old)) eachPath(function (p) { if (p.log_format === old) p.log_format = nn; });
     f.cur = nn;
   }
 
   // 저장 직전: 편집 중에 겹쳐서 미뤄 둔 이름 바꾸기를 한꺼번에 반영한다.
   // 이름을 서로 맞바꾼 경우(A↔B, A→B→C→A)는 하나씩 바꾸면 계속 겹치므로, 모든 이름이 올바를 때
-  // {cur → 새 이름} 표를 만들어 서버의 log_format을 한 번에 옮긴다. 이름이 틀렸으면 아무것도 바꾸지 않는다
+  // {cur → 새 이름} 표를 만들어 모든 경로의 log_format을 한 번에 옮긴다. 이름이 틀렸으면 아무것도 바꾸지 않는다
   // (validate가 오류를 보이고 저장을 막는다). → 반영했으면 true.
-  function settle(entries, eachServer) {
+  function settle(entries, eachPath) {
     var seen = Object.create(null);
     for (var i = 0; i < entries.length; i++) {
       var n = trim(entries[i].name);
@@ -87,20 +88,26 @@
     }
     var map = Object.create(null);
     entries.forEach(function (f) { if (f.cur && !isReserved(f.cur)) map[f.cur] = trim(f.name); });
-    eachServer(function (sv) {
-      if (Object.prototype.hasOwnProperty.call(map, sv.log_format)) sv.log_format = map[sv.log_format];
+    eachPath(function (p) {
+      if (Object.prototype.hasOwnProperty.call(map, p.log_format)) p.log_format = map[p.log_format];
     });
     entries.forEach(function (f) { f.cur = trim(f.name); });
     return true;
   }
 
-  // 이 형식을 쓰는 서버의 표시 이름 목록. services: [{name, servers: [...]}]
+  // 이 형식을 쓰는 경로가 있는 서버의 표시 이름 목록 (경로 여러 개가 같은 형식이어도 서버는 한 번만, 같은 표시도 한 번만).
+  // services: [{name, servers: [{name, log_paths: [{log_format}]}]}]
   function usedBy(f, services) {
     if (!f.cur || isReserved(f.cur)) return [];
-    var out = [];
+    var out = [], seen = Object.create(null);
     services.forEach(function (s) {
       (s.servers || []).forEach(function (sv) {
-        if (sv.log_format === f.cur) out.push((trim(sv.name) || "(이름 없음)") + " (" + (trim(s.name) || "(이름 없음)") + ")");
+        var hit = (sv.log_paths || []).some(function (p) { return p.log_format === f.cur; });
+        if (!hit) return;
+        var label = (trim(sv.name) || "(이름 없음)") + " (" + (trim(s.name) || "(이름 없음)") + ")";
+        if (seen[label]) return;
+        seen[label] = true;
+        out.push(label);
       });
     });
     return out;
@@ -135,7 +142,7 @@
     return hits.length > 0;
   }
 
-  // ------------------------------------------------------------ 서버 카드의 형식 드롭다운
+  // ------------------------------------------------------------ 로그 경로 줄의 형식 드롭다운
 
   function option(value, label, current) {
     var o = el("option", { value: value }, label);
@@ -159,7 +166,7 @@
     return s;
   }
 
-  // ------------------------------------------------------------ 샘플 줄 결과 (서버 카드와 형식 탭이 같이 쓴다)
+  // ------------------------------------------------------------ 샘플 줄 결과 (로그 경로 줄과 형식 탭이 같이 쓴다)
 
   function sampleResult(res, extraLines) {
     if (!res || res.ok !== true) {
@@ -224,7 +231,7 @@
         el("thead", null, el("tr", null, el("th", null, "이름"), el("th", null, "표시"), el("th", null, "패턴"))),
         el("tbody", null, rows)),
       el("p", { class: "muted small", style: "margin:6px 0 0" },
-        "직접 지정 (필드 번호): 줄을 공백으로 나눈 칸의 순서로 메서드·경로·상태·시간을 고르는 예전 방식이에요. 서버 카드에서 골라요.")));
+        "직접 지정 (필드 번호): 줄을 공백으로 나눈 칸의 순서로 메서드·경로·상태·시간을 고르는 예전 방식이에요. 서버 카드의 로그 경로마다 골라요.")));
 
     var box = el("fieldset", null, el("legend", null, "내 형식 (" + ctx.entries.length + "개)"),
       el("p", { class: "notice" }, HELP));

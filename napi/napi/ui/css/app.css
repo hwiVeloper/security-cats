@@ -238,8 +238,13 @@ table{border-collapse:collapse}
 .with-btn .btn{flex-shrink:0;white-space:nowrap}
 .glob-row{display:flex;gap:6px;align-items:center;min-width:0}
 .glob-row input{flex:1}
+.field .glob-row select{flex:0 1 190px;width:auto}
 .glob-row .btn{flex-shrink:0}
-.glob-list > div:not(.glob-row){margin-top:2px}
+.glob-list > div:not(.path-item){margin-top:2px}
+.path-item{display:flex;flex-direction:column;gap:3px;min-width:0;padding:6px 0;border-bottom:1px dashed var(--line)}
+.path-item .path-custom{margin:4px 0 0 12px;padding-left:10px;border-left:2px solid var(--line)}
+.path-tools{display:flex;gap:6px;flex-wrap:wrap}
+.path-item .sample{margin-top:4px}
 .secret-state{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}
 .secret-ok{color:var(--awake);font-weight:700}
 .field input.mono{font-family:Consolas,monospace}

@@ -12,7 +12,10 @@
  * - save_config는 napi/config.py validate_config와 같은 문구로 검사한다.
  *
  * 형식·경로·비밀번호 (Task 5):
- * - 사용자 형식 "webtob_vhost"를 정산 API의 SETTLE-01이 쓴다 (삭제 불가 확인용). SETTLE-01은 로그 경로가 2개다.
+ * - 사용자 형식 "webtob_vhost"를 정산 API의 SETTLE-01이 쓴다 (삭제 불가 확인용). SETTLE-01은 로그 경로가 2개고
+ *   경로마다 형식이 다르다 (access.log* = webtob_vhost, archive/*.gz = webtob).
+ * - 서버는 log_paths: [{glob, log_format, custom_format}]만 쓴다. save_config에 서버 단위 log_glob(s) /
+ *   log_format / custom_format이 오면 거절한다 (설정 화면이 예전 모양을 보내지 않는지 확인용).
  * - test_format / test_log_line은 logformat.py를 줄인 JS 판이다 (리터럴, 공백, [시각], %{...}t, %r/%m/%U/%s).
  * - 비밀번호·키파일 암호는 "입력됨" 표시만 둔다 (값은 어디에도 두지 않는다). secret_status, clear_secret 흉내.
  * - pick_key_file은 고정 경로를 고른 것처럼 돌려준다.
@@ -165,8 +168,9 @@
         name: "라운드페이 API",
         spec: { type: "openapi", source: "url", location: "https://swagger.test.local/roundpay/v3/api-docs" },
         servers: SERVERS.map(function (n, i) {
-          return { name: n, host: "10.0.12." + (11 + i), user: "napi", log_globs: ["/logs/webtob/access.log*"], port: 22,
-            auth: "password", key_file: null, log_format: "webtob", custom_format: null };
+          return { name: n, host: "10.0.12." + (11 + i), user: "napi",
+            log_paths: [{ glob: "/logs/webtob/access.log*", log_format: "webtob", custom_format: null }], port: 22,
+            auth: "password", key_file: null };
         }),
         path_mapping: { strip_prefix: "", add_prefix: "" },
         thresholds: { awake_days: 30, min_coverage_days: 90 },
@@ -179,8 +183,12 @@
       {
         name: "정산 API",
         spec: { type: "openapi", source: "file", location: "C:\\specs\\settle.yaml" },
-        servers: [{ name: "SETTLE-01", host: "10.0.20.5", user: "napi", log_globs: ["/logs/access.log*", "/logs/archive/access.log*.gz"],
-          port: 22, auth: "key", key_file: "C:\\Users\\napi\\.ssh\\id_ed25519", log_format: "webtob_vhost", custom_format: null }],
+        servers: [{ name: "SETTLE-01", host: "10.0.20.5", user: "napi",
+          log_paths: [
+            { glob: "/logs/access.log*", log_format: "webtob_vhost", custom_format: null },
+            { glob: "/logs/archive/access.log*.gz", log_format: "webtob", custom_format: null }
+          ],
+          port: 22, auth: "key", key_file: "C:\\Users\\napi\\.ssh\\id_ed25519" }],
         path_mapping: { strip_prefix: "", add_prefix: "" },
         thresholds: { awake_days: 30, min_coverage_days: 90 },
         exclude_paths: [], notes: {}
@@ -285,18 +293,21 @@
         var sl = label + " / 서버 '" + sv.name + "'";
         if (!String(sv.host || "").trim()) errors.push(sl + ": 호스트가 비어 있습니다.");
         if (sv.auth === "key" && !sv.key_file) errors.push(sl + ": 키 인증인데 키 파일이 지정되지 않았습니다.");
-        if (!known[sv.log_format]) errors.push(sl + ": 모르는 로그 형식이에요: " + sv.log_format);
-        if (sv.log_format === "custom" && !sv.custom_format) errors.push(sl + ": 로그 형식이 custom인데 사용자 정의 형식이 없습니다.");
-        var globs = sv.log_globs || [];
-        if (!globs.length) errors.push(sl + ": 로그 경로를 하나 이상 지정해야 합니다.");
-        globs.forEach(function (glob) {
-          glob = String(glob);
+        var legacy = ["log_glob", "log_globs", "log_format", "custom_format"].filter(function (k) { return k in sv; });
+        if (legacy.length) errors.push("설정 파일 내용이 올바르지 않습니다: log_paths와 " + legacy[0] + "를 함께 쓸 수 없습니다");
+        var paths = sv.log_paths || [];
+        if (!paths.length) errors.push(sl + ": 로그 경로를 하나 이상 지정해야 합니다.");
+        paths.forEach(function (lp) {
+          var glob = String(lp.glob);
           var dir = glob.slice(0, glob.lastIndexOf("/") + 1);
+          var pl = sl + ": 경로 " + glob;
           if (/[\x00-\x1f]/.test(glob)) errors.push(sl + ": 로그 경로에 제어 문자를 쓸 수 없습니다: " + glob);
           else if (glob.charAt(0) !== "/") errors.push(sl + ": 로그 경로는 '/'로 시작해야 합니다: " + glob);
           else if (/[*?\[]/.test(dir)) errors.push(sl + ": 로그 경로의 디렉터리 부분에는 * ? [ 를 쓸 수 없습니다: " + glob);
           else if (/\/\/|\/\.\/|\/\.\.\//.test(dir)) errors.push(sl + ": 경로에 // 나 . / .. 를 쓸 수 없어요: " + glob);
           else if (dir.length === glob.length) errors.push(sl + ": 로그 경로를 쓸 수 없습니다 — 파일 이름 패턴이 비어 있어요: " + glob);
+          if (!known[lp.log_format]) errors.push(pl + ": 모르는 로그 형식이에요: " + lp.log_format);
+          else if (lp.log_format === "custom" && !lp.custom_format) errors.push(pl + ": 로그 형식이 custom인데 사용자 정의 형식이 없습니다.");
         });
       });
     });
@@ -496,20 +507,25 @@
 
   // ------------------------------------------------------------ 명령 미리보기 (모양만 흉내 낸다)
 
+  // 경로마다 번호(1부터)를 붙여 find하고, 같은 파일은 번호가 작은 경로(위쪽 경로)의 형식으로 한 번만 읽는다.
   function fakeCommand(sv, settings, window) {
-    if (sv.log_format === "custom" && !sv.custom_format) return "설정 오류: 사용자 정의 형식이 없어요";
-    var finds = (sv.log_globs || []).map(function (glob) {
-      glob = String(glob);
+    var paths = sv.log_paths || [];
+    for (var i = 0; i < paths.length; i++) {
+      if (paths[i].log_format === "custom" && !paths[i].custom_format) return "설정 오류: 사용자 정의 형식이 없어요";
+    }
+    var finds = paths.map(function (lp, k) {
+      var glob = String(lp.glob);
       var cut = glob.lastIndexOf("/");
       var dir = cut > 0 ? glob.slice(0, cut) : "/";
-      return "  find " + dir + " -maxdepth 1 -type f -name \"" + glob.slice(cut + 1) + "\" 2>/dev/null\n";
+      return "  find " + dir + " -maxdepth 1 -type f -name \"" + glob.slice(cut + 1) + "\" 2>/dev/null | sed 's|^|" + (k + 1) + "/|'\n";
     }).join("");
+    var fmts = paths.map(function (lp, k) { return (k + 1) + "=" + lp.log_format; }).join(",");
     var since = window === "all" ? "-" : daysBefore(TODAY, +window);
     var script = "set -u; tok=\"$0\"\n" +
-      "{\n" + finds + "} | LC_ALL=C sort -u | while IFS= read -r f; do\n" +
-      "  printf \"\\n\\001F%s\\t%s\\n\" \"$tok\" \"$f\"\n" +
+      "{\n" + finds + "} | <같은 파일은 번호가 가장 작은 줄만 남김 (LC_ALL=C 정렬)> | while IFS=/ read -r n f; do\n" +
+      "  printf \"\\n\\001F%s\\t%s\\t%s\\n\" \"$tok\" \"$n\" \"$f\"\n" +
       "  case \"$f\" in *.gz) gzip -dc -- \"$f\" 2>/dev/null ;; *) cat -- \"$f\" 2>/dev/null ;; esac\n" +
-      "done | LC_ALL=C awk -v since=" + since + " -v fmt=" + sv.log_format +
+      "done | LC_ALL=C awk -v since=" + since + " -v fmts=" + fmts +
       " -v max_rows=" + settings.max_rows + " -v top404=" + settings.top_404 + " \"<집계 awk 프로그램 (미리보기에서는 생략)>\"";
     return "timeout " + settings.remote_timeout_sec + " nice -n 19 ionice -c3 sh -c '" + script + "' napi-scan-00000000";
   }
