@@ -124,3 +124,38 @@ def test_zero_stats_entry():
     r = match({}, [op("GET", "/v1/a")], NOMAP, [])
     s = r.per_op["GET /v1/a"]
     assert (s.calls, s.first, s.last, s.by_status, s.by_server) == (0, None, None, {}, {})
+
+
+# --- 로그 쪽 {*}와 "정규화되면 {*}가 되는" 명세 리터럴 (I2) ---
+
+def test_star_matches_literal_that_normalizes_to_star():
+    """숫자를 섞은 긴 이름이나 숫자뿐인 리터럴은 서버에서 {*}로 정규화된다."""
+    ops = [op("GET", "/api/retrieveAccountBalanceV2"), op("GET", "/v1/codes/2024")]
+    rows = [row("GET", "/api/{*}", count=3), row("GET", "/v1/codes/{*}", count=2)]
+    r = match({"A": rows}, ops, NOMAP, [])
+    assert r.per_op["GET /api/retrieveAccountBalanceV2"].calls == 3
+    assert r.per_op["GET /v1/codes/2024"].calls == 2
+    assert r.unmatched == {}
+
+
+def test_normalizing_literal_vs_param_keeps_spec_order():
+    """{*} 행은 어느 쪽인지 알 수 없다 → 리터럴 우선을 주지 않고 스펙 순서로 정한다."""
+    lit, par = op("GET", "/api/retrieveAccountBalanceV2"), op("GET", "/api/{id}")
+    r = match({"A": [row("GET", "/api/{*}")]}, [lit, par], NOMAP, [])
+    assert (r.per_op[lit.key].calls, r.per_op[par.key].calls) == (1, 0)
+    r = match({"A": [row("GET", "/api/{*}")]}, [par, lit], NOMAP, [])
+    assert (r.per_op[lit.key].calls, r.per_op[par.key].calls) == (0, 1)
+
+
+def test_normalizing_literal_does_not_count_as_literal():
+    a = op("GET", "/api/retrieveAccountBalanceV2/{b}")
+    b = op("GET", "/api/{a}/x")
+    r = match({"A": [row("GET", "/api/{*}/x")]}, [a, b], NOMAP, [])
+    assert (r.per_op[a.key].calls, r.per_op[b.key].calls) == (0, 1)
+
+
+def test_star_still_does_not_match_plain_literal():
+    ops = [op("GET", "/api/retrieveAccountBalance")]  # 숫자 없음 → 정규화되지 않는 리터럴
+    r = match({"A": [row("GET", "/api/{*}")]}, ops, NOMAP, [])
+    assert r.per_op["GET /api/retrieveAccountBalance"].calls == 0
+    assert ("GET", "/api/{*}") in r.unmatched

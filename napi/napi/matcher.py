@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from napi.logformat import is_variable_segment
 from napi.models import AggRow, PathMapping, SpecOperation
 
 _DROPPED_METHODS = {"HEAD", "OPTIONS"}
@@ -89,17 +90,32 @@ def _is_param(seg: str) -> bool:
     return seg.startswith("{") and seg.endswith("}") and bool(inner) and "{" not in inner and "}" not in inner
 
 
+_STAR = "{*}"
+
+
 def _match_template(tpl: list[str], segs: list[str]) -> int | None:
-    """일치하면 리터럴 조각 수, 아니면 None."""
+    """일치하면 리터럴 조각 수, 아니면 None.
+
+    - `{param}` 조각은 아무 조각과 일치한다 (로그의 `{*}` 포함).
+    - 리터럴 조각은 같은 문자열과 일치한다. 그리고 원격 정규화 규칙
+      (napi.logformat.is_variable_segment)이 그 리터럴을 `{*}`로 바꾸는 경우에는
+      로그의 `{*}`와도 일치한다 (예: `retrieveAccountBalanceV2`, `2024`). 서버에서 이미
+      `{*}`로 뭉개졌기 때문이다.
+    - 이렇게 `{*}`로 맞은 리터럴은 우선순위용 리터럴 수에 넣지 않는다. `{*}` 행은 그
+      리터럴인지 같은 자리의 `{param}`인지 알 수 없으므로, 같은 자리에 `{param}` 대안이
+      있으면 둘은 동률이 되어 스펙 순서(먼저 나온 것)로 정해진다. 대안이 없으면 그
+      리터럴 템플릿만 후보라서 그대로 매칭된다.
+    """
     if len(tpl) != len(segs):
         return None
     literals = 0
     for t, s in zip(tpl, segs):
         if _is_param(t):
             continue
-        if t != s:
+        if t == s:
+            literals += 1
+        elif not (s == _STAR and is_variable_segment(t)):
             return None
-        literals += 1
     return literals
 
 

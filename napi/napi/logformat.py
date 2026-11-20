@@ -157,7 +157,8 @@ _HAS_DIGIT_RE = re.compile(r"[0-9]")
 _HAS_ALPHA_RE = re.compile(r"[A-Za-z]")
 
 
-def _is_variable(seg: str) -> bool:
+def is_variable_segment(seg: str) -> bool:
+    """정규화 규칙 5: 이 조각은 {*}로 바뀐다. 매처도 같은 판정을 쓴다."""
     if (_DIGITS_RE.fullmatch(seg) or _UUID_RE.fullmatch(seg)
             or _HEX16_RE.fullmatch(seg) or _NUMLIKE_RE.fullmatch(seg)):
         return True
@@ -182,7 +183,7 @@ def normalize_path(path: str) -> str:
             seg = seg[:i]
         if seg == "":
             continue  # 연속 '/'와 끝 '/' 제거
-        segs.append("{*}" if _is_variable(seg) else seg)
+        segs.append("{*}" if is_variable_segment(seg) else seg)
     return "/" + "/".join(segs)
 
 
