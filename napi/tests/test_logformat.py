@@ -22,6 +22,7 @@ def test_presets_display_names():
         "nginx_combined": "nginx (combined)",
         "webtob": "WebtoB",
         "webtob_combined": "WebtoB (combined)",
+        "webtob_error": "WebtoB (error)",
         "custom": "직접 지정 (필드 번호)",
     }
 

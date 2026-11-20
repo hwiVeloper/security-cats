@@ -27,6 +27,7 @@ def test_builtin_formats_values():
         "nginx_combined": '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
         "webtob": '%h %l %u %t "%r" %s %b',
         "webtob_combined": '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"',
+        "webtob_error": '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] [%*] [%*] %*. %m %U',
     }
     assert list(PRESETS) == [*BUILTIN_FORMATS, "custom"]
     assert PRESETS["webtob_combined"] == "WebtoB (combined)"
@@ -37,7 +38,19 @@ def test_builtin_patterns_compile():
     for name, pattern in BUILTIN_FORMATS.items():
         spec = compile_format(pattern)
         assert isinstance(spec, FormatSpec), name
-        assert spec.has_status, name
+        assert spec.has_status == (name != "webtob_error"), name  # 에러 로그에는 상태코드가 없다
+
+
+def test_webtob_error_builtin_reads_request_from_message():
+    from napi.logformat import test_format as run_test_format
+    p = BUILTIN_FORMATS["webtob_error"]
+    ok = run_test_format(p, "[2026-11-20T08:14:24] [CLIENT(10.0.0.9)] [E] [ERR-00075] "
+                        "JSV: Premature client disconnection. POST /v1/home/token?x=1 HTTP/1.1")
+    assert ok["ok"] and ok["method"] == "POST" and ok["normalized"] == "/v1/home/token"
+    assert ok["date"] == "20261120" and ok["status_class"] == "???"
+    # 요청이 찍히지 않는 에러 줄은 읽지 않는다 (parse_fail)
+    assert not run_test_format(p, "[2026-11-20T09:00:00] [CLIENT(10.0.0.1)] [E] [ERR-00012] "
+                              "JSV: connection reset by peer")["ok"]
 
 
 def test_compile_tokens_webtob():

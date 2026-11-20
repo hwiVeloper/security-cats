@@ -16,6 +16,7 @@
   var BUILTIN = [
     { name: "webtob", label: "WebtoB", pattern: '%h %l %u %t "%r" %s %b' },
     { name: "webtob_combined", label: "WebtoB (combined)", pattern: '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"' },
+    { name: "webtob_error", label: "WebtoB (error)", pattern: '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] [%*] [%*] %*. %m %U' },
     { name: "apache_common", label: "Apache (common)", pattern: '%h %l %u %t "%r" %>s %b' },
     { name: "apache_combined", label: "Apache (combined)", pattern: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"' },
     { name: "nginx_combined", label: "nginx (combined)", pattern: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"' }

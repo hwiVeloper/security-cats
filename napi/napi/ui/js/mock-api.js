@@ -342,7 +342,8 @@
     apache_combined: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
     nginx_combined: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
     webtob: '%h %l %u %t "%r" %s %b',
-    webtob_combined: '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"'
+    webtob_combined: '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"',
+    webtob_error: '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] [%*] [%*] %*. %m %U'
   };
   var TIME_WIDTHS = { Y: 4, m: 2, d: 2, H: 2, M: 2, S: 2, b: 3, z: 5, y: 2 };
   var REQUIRED = "API 호출을 셀 수 없는 형식이에요 (요청/시각 필요)";

@@ -91,6 +91,8 @@ BUILTIN_FORMATS: dict[str, str] = {
     "nginx_combined": '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
     "webtob": '%h %l %u %t "%r" %s %b',
     "webtob_combined": '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"',
+    # WebtoB 에러 로그: 메시지 끝의 ". METHOD PATH ..."에서 요청을 읽는다. 요청이 없는 에러 줄은 parse_fail.
+    "webtob_error": '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] [%*] [%*] %*. %m %U',
 }
 
 PRESETS: dict[str, str] = {
@@ -99,6 +101,7 @@ PRESETS: dict[str, str] = {
     "nginx_combined": "nginx (combined)",
     "webtob": "WebtoB",
     "webtob_combined": "WebtoB (combined)",
+    "webtob_error": "WebtoB (error)",
     "custom": "직접 지정 (필드 번호)",
 }
 

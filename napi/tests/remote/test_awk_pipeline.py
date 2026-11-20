@@ -676,6 +676,25 @@ def test_pipeline_parity_user_formats(bash, tmp_path, fmt, since):
         assert secret not in blob, secret
 
 
+@pytest.mark.parametrize("since", [None, "20260801"])
+def test_pipeline_parity_webtob_error(bash, tmp_path, since):
+    """기본 제공 webtob_error: 메시지 끝의 요청만 읽고, 상태는 ???, 요청 없는 줄은 parse_fail."""
+    d = tmp_path.resolve()
+    data = (FIXTURES / "webtob_error.log").read_bytes()
+    files = write_log(d, "error.log", data)
+    out = parity(bash, server_for(d, "error.log", "webtob_error"), files, "webtob_error", (), since)
+    (stat,) = f_lines(out)
+    assert int(stat[4]) == len(_records(data)) and int(stat[5]) == 4  # 요청 없는 줄 2 + 13월 + 형식 밖 1
+    rows = [x for x in out if x.startswith(b"R\t")]
+    assert rows and all(x.split(b"\t")[3] == b"???" for x in rows)
+    if since is None:
+        assert any(x.startswith(b"R\tGET\t/v1/users/{*}\t???\t") for x in rows)
+    assert any(x.startswith(b"R\tGET\t/v1/users/me\t???\t2\t") for x in rows)
+    blob = b"\n".join(b"F" if x.startswith(b"F\t") else x for x in out)
+    for secret in (b"token=abc", b"550e8400", b"CLIENT", b"ERR-", b"JSV", b"HTTP/1.1", b"10.0.0."):
+        assert secret not in blob, secret
+
+
 def test_pipeline_no_status_format(bash, tmp_path):
     d = tmp_path.resolve()
     fmts = [LogFormatDef("ns", '%t "%r"')]

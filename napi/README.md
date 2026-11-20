@@ -48,6 +48,7 @@ Python 3.12 이상이 필요합니다.
 | --- | --- |
 | WebtoB (`webtob`) | `%h %l %u %t "%r" %s %b` |
 | WebtoB (combined) (`webtob_combined`) | `%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"` |
+| WebtoB (error) (`webtob_error`) | `[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] [%*] [%*] %*. %m %U` — 에러 메시지 끝의 `. GET /경로 HTTP/1.1`에서 요청을 읽습니다. 요청이 찍히지 않는 에러 줄은 건너뛴 줄로 셉니다. 상태코드가 없어 응답 분포는 "상태 미상"입니다. |
 | Apache (common) (`apache_common`) | `%h %l %u %t "%r" %>s %b` |
 | Apache (combined) (`apache_combined`) | `%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"` |
 | nginx (combined) (`nginx_combined`) | Apache (combined)와 같음 |
