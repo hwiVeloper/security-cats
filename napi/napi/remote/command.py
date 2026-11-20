@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Sequence
 
-from napi.models import ServerConfig, Settings
+from napi.models import LogFormatDef, ServerConfig, Settings
 from napi.remote.awk_program import awk_program
 
 _TOKEN_RE = re.compile(r"napi-scan-[0-9a-f]{8}")
@@ -64,16 +65,17 @@ def _check_token(token: str) -> None:
 
 
 def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
-                   token: str) -> str:
+                   token: str, formats: Sequence[LogFormatDef] = ()) -> str:
     """sh -c로 실행할 본문 (find | 파일별 gzip -dcf | awk).
 
     본문은 토큰을 "$0"으로 읽는다. 반드시 `sh -c <본문> <token>`으로 실행해야 한다.
+    formats는 사용자 정의 형식 목록이다. server.log_format을 모르면 FormatError(ValueError).
     """
     _check_token(token)
     _check_since(since)
     max_rows = _int("max_rows", settings.max_rows, 1)  # MAXKEYS = 4 × max_rows ≥ 4
     top_404 = _int("top_404", settings.top_404, 0)
-    program = awk_program(server.log_format, server.custom_format)
+    program = awk_program(server.log_format, server.custom_format, formats)
     directory, pattern = split_glob(server.log_glob)
 
     find = ["find", shlex.quote(directory), "-maxdepth", "1", "-type", "f",
@@ -87,9 +89,9 @@ def build_pipeline(server: ServerConfig, settings: Settings, since: str | None,
 
 
 def build_remote_command(server: ServerConfig, settings: Settings, since: str | None,
-                         token: str) -> str:
+                         token: str, formats: Sequence[LogFormatDef] = ()) -> str:
     """SSH exec로 보낼 명령 전문. token은 취소용 식별자 (napi-scan-<hex8>)."""
     timeout = _int("remote_timeout_sec", settings.remote_timeout_sec, 1)
-    script = build_pipeline(server, settings, since, token)
+    script = build_pipeline(server, settings, since, token, formats)
     return (f"timeout {timeout} nice -n 19 {_IONICE} "
             f"sh -c {shlex.quote(script)} {shlex.quote(token)}")

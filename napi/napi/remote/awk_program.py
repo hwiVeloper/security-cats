@@ -5,6 +5,12 @@ napi.logformat의 "AWK PARITY CONTRACT"를 POSIX awk 문법만으로 그대로 �
 gawk 전용 기능과 정규식 반복 횟수 {n}은 쓰지 않는다. 반복이 필요한 정규식은
 여기서 문자 클래스를 펼쳐 만든다.
 
+parse(): 기본 제공 형식과 사용자 형식은 같은 FormatSpec에서 "FORMAT PARSE CONTRACT"를
+토큰마다 펼친 코드로 생성한다 (커서 변수 + substr/index/match). 사용자 패턴의 글자는
+_awk_str로 이스케이프한 문자열 리터럴로만 들어가고 정규식, 주석, 코드에는 들어가지 않는다.
+결과는 P_M(메서드), P_U(경로 원문), P_S(상태 3자리 또는 ""), P_D(YYYYMMDD)이다.
+P_S가 ""이면(상태 없는 형식) 상태군은 "???"이고 404가 아닌 것으로 센다.
+
 입력: 셸 루프가 파일마다 "\\n\\001F<MARK>\\t<경로>" 표시 줄을 먼저 내고 파일 내용을
 이어 붙인다. 읽을 수 없는 파일과 압축 해제 실패는 "\\n\\001E<MARK>\\t<코드>\\t<경로>"로 알린다.
 MARK는 스캔마다 다른 취소 토큰이고, 표시 줄은 줄 전체가 맨 앞부터 일치할 때만 인정한다
@@ -16,8 +22,10 @@ MARK는 스캔마다 다른 취소 토큰이고, 표시 줄은 줄 전체가 맨
 """
 from __future__ import annotations
 
-from napi.logformat import _CLF_FORMATS
-from napi.models import CustomFormat
+from collections.abc import Sequence
+
+from napi.logformat import FormatSpec, Token, resolve_format
+from napi.models import CustomFormat, LogFormatDef
 
 _HEX = "[0-9a-fA-F]"
 _DIGIT = "[0-9]"
@@ -149,8 +157,8 @@ function handle(l,    d, mp, k) {
   if (fmin[cur] == "" || d < fmin[cur]) fmin[cur] = d
   if (d > fmax[cur]) fmax[cur] = d
   if (USE_SINCE && d < SINCE_S) { foor[cur]++; return }
-  mp = P_M SUBSEP norm(P_P)
-  k = mp SUBSEP substr(P_S, 1, 1) "xx"
+  mp = P_M SUBSEP norm(P_U)
+  k = mp SUBSEP (P_S == "" ? "???" : substr(P_S, 1, 1) "xx")
   if (!(k in cnt)) {
     if (nkeys >= MAXKEYS) { overflow++; return }
     nkeys++
@@ -255,29 +263,6 @@ END {
 }
 """
 
-# CLF 계열: 첫 [dd/Mon/yyyy, 첫 "..." 요청줄, 닫는 따옴표 뒤 첫 토큰 = status
-_PARSE_CLF = r"""
-function parse(line,    q, rest, req, t, r, n) {
-  if (!match(line, /\[@CLFTIME@/)) return 0
-  if (!clfdate(substr(line, RSTART + 1, 11))) return 0
-  q = index(line, "\"")
-  if (q == 0) return 0
-  rest = substr(line, q + 1)
-  q = index(rest, "\"")
-  if (q == 0) return 0
-  req = substr(rest, 1, q - 1)
-  rest = substr(rest, q + 1)
-  n = ntok(req, t)
-  if (n < 2 || t[1] !~ /^[A-Z]+$/) return 0
-  n = ntok(rest, r)
-  if (n < 1 || r[1] !~ /@STATUS@/) return 0
-  P_M = t[1]
-  P_P = t[2]
-  P_S = r[1]
-  return 1
-}
-"""
-
 # custom: [ \t]+로 나눈 N번째 필드
 _PARSE_CUSTOM = r"""
 function parse(line,    f, n, p, tm) {
@@ -293,7 +278,7 @@ function parse(line,    f, n, p, tm) {
   tm = f[@TF@]
 @TIME@
   P_M = f[@MF@]
-  P_P = p
+  P_U = p
   P_S = f[@SF@]
   return 1
 }
@@ -312,11 +297,128 @@ def _field(n: object) -> str:
     return str(n)
 
 
-def awk_program(fmt: str, custom: CustomFormat | None) -> str:
-    """형식에 맞는 awk 소스를 돌려준다. 모르는 형식이면 ValueError."""
-    if fmt in _CLF_FORMATS:
-        parse = _PARSE_CLF
-    elif fmt == "custom":
+# 패턴 리터럴에서 awk 문자열에 그대로 둘 바이트. 나머지는 \" \\ 또는 3자리 8진수(\ooo)로 쓴다.
+# 그래서 생성한 소스는 ASCII뿐이고 개행, 제어 문자, 자리표시자 문자(@)가 들어가지 않는다.
+_SAFE_BYTES = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    b" !#$%&'()*+,-./:;<=>?[]^_`{|}~")
+
+
+def _awk_str(text: str) -> str:
+    """text(UTF-8 바이트)를 awk 문자열 리터럴로 바꾼다. 정규식에는 절대 쓰지 않는다."""
+    out = []
+    for b in text.encode("utf-8"):
+        if b == 0x5C:
+            out.append("\\\\")
+        elif b == 0x22:
+            out.append('\\"')
+        elif b in _SAFE_BYTES:
+            out.append(chr(b))
+        else:
+            out.append(f"\\{b:03o}")
+    return '"' + "".join(out) + '"'
+
+
+_DATE_VARS = {"Y": "ty", "m": "tm", "d": "td"}
+
+
+def _gen_field_value(tok: Token, nxt: Token | None) -> list[str]:
+    """field(t, tfmt 제외)의 값 v를 정하고 커서 p를 옮긴다 (CONTRACT의 경계 규칙)."""
+    keep = tok.directive in ("r", "m", "U", "s")  # 나머지 field는 값을 버린다
+    if nxt is None:
+        code = ["  v = substr(line, p)"] if keep else []
+        return code + ["  p = n + 1"]
+    if nxt.kind == "ws":
+        code = ["  i = match(substr(line, p), /[ \\t]/)",
+                "  if (i == 0) i = n - p + 2",
+                "  if (i == 1) return 0"]
+    elif nxt.kind == "lit":
+        code = [f"  i = index(substr(line, p), {_awk_str(nxt.text)})",
+                "  if (i == 0) return 0"]
+    else:
+        raise ValueError("필드 두 개가 붙어 있는 형식은 awk로 만들 수 없어요")
+    if keep:
+        code.append("  v = substr(line, p, i - 1)")
+    return code + ["  p += i - 1"]
+
+
+def _gen_token(tok: Token, nxt: Token | None) -> list[str]:
+    if tok.kind == "lit":
+        size = len(tok.text.encode("utf-8"))
+        return [f"  if (substr(line, p, {size}) != {_awk_str(tok.text)}) return 0",
+                f"  p += {size}"]
+    if tok.kind == "ws":
+        return ["  if (!match(substr(line, p), /^[ \\t]+/)) return 0",
+                "  p += RLENGTH"]
+    d = tok.directive
+    if d == "t":
+        return ['  if (substr(line, p, 1) != "[") return 0',
+                '  i = index(substr(line, p), "]")',
+                "  if (i == 0) return 0",
+                "  v = substr(line, p + 1, 11)",
+                f"  if (v !~ /^{_CLF_TIME_RE}/ || !clfdate(v)) return 0",
+                "  p += i"]
+    if d == "tfmt":
+        width = int(tok.time_width)
+        code = [f"  if (n - p + 1 < {width}) return 0",
+                f"  v = substr(line, p, {width})"]
+        for key, off, size in tok.time_layout:
+            code.append(f"  c = substr(v, {int(off) + 1}, {int(size)})")
+            if key == "b":
+                code += ["  c = month(c)", '  if (c == "") return 0', "  tm = c"]
+            else:
+                code += ["  if (c !~ /^[0-9]+$/) return 0", f"  {_DATE_VARS[key]} = c"]
+        if tok.time_layout:
+            code.append("  P_D = ty tm td")
+        return code + [f"  p += {width}"]
+    code = _gen_field_value(tok, nxt)
+    if d == "r":
+        code += ["  if (ntok(v, t) < 2 || t[1] !~ /^[A-Z]+$/) return 0",
+                 "  P_M = t[1]",
+                 "  P_U = t[2]"]
+    elif d == "m":
+        code += ["  if (v !~ /^[A-Z]+$/) return 0", "  P_M = v"]
+    elif d == "U":
+        code.append("  P_U = v")
+    elif d == "s":
+        code += [f"  if (v !~ /{_STATUS_RE}/) return 0", "  P_S = v"]
+    return code
+
+
+def _gen_parse(spec: FormatSpec) -> str:
+    """FORMAT PARSE CONTRACT를 토큰마다 펼친 parse(). 커서 p는 1부터, 바이트 단위다.
+    last_essential 토큰까지만 만들고 그 뒤에서 바로 성공한다. 패턴 글자는 _awk_str로만
+    들어간다 (주석에도 넣지 않는다)."""
+    last = spec.last_essential
+    if last < 0:
+        raise ValueError("필수 토큰이 없는 형식이에요")
+    out = ["function parse(line,    n, p, i, v, c, t, ty, tm, td) {",
+           "  n = length(line)",
+           "  p = 1",
+           '  P_S = ""']
+    for idx in range(last + 1):
+        tok = spec.tokens[idx]
+        nxt = spec.tokens[idx + 1] if idx + 1 < len(spec.tokens) else None
+        out += _gen_token(tok, nxt)
+    out += ["  return 1", "}"]
+    return "\n".join(out)
+
+
+def _fill(text: str) -> str:
+    """고정 템플릿의 정규식 자리표시자를 채운다 (생성한 parse()를 넣기 전에 한다)."""
+    return (text.replace("@UUID@", _UUID_RE)
+            .replace("@CLFTIME@", _CLF_TIME_RE)
+            .replace("@ISODATE@", _ISO_DATE_RE)
+            .replace("@STATUS@", _STATUS_RE))
+
+
+def awk_program(fmt: str, custom: CustomFormat | None,
+                formats: Sequence[LogFormatDef] = ()) -> str:
+    """형식에 맞는 awk 소스를 돌려준다. 모르는 형식이면 ValueError(FormatError).
+
+    기본 제공 형식과 사용자 형식(formats)은 compile_format의 FormatSpec에서 parse()를
+    생성하고, "custom"은 v1 필드 번호 파서를 쓴다."""
+    if fmt == "custom":
         if custom is None:
             raise ValueError("custom 형식에는 사용자 정의 형식이 필요해요")
         if custom.time_format == "iso8601":
@@ -325,16 +427,15 @@ def awk_program(fmt: str, custom: CustomFormat | None) -> str:
             time_part = _TIME_CLF
         else:
             raise ValueError(f"모르는 시각 형식: {custom.time_format!r}")
-        parse = (_PARSE_CUSTOM.replace("@TIME@", time_part)
-                 .replace("@MF@", _field(custom.method_field))
-                 .replace("@PF@", _field(custom.path_field))
-                 .replace("@SF@", _field(custom.status_field))
-                 .replace("@TF@", _field(custom.time_field)))
+        parse = _fill(_PARSE_CUSTOM.replace("@TIME@", time_part)
+                      .replace("@MF@", _field(custom.method_field))
+                      .replace("@PF@", _field(custom.path_field))
+                      .replace("@SF@", _field(custom.status_field))
+                      .replace("@TF@", _field(custom.time_field)))
     else:
-        raise ValueError(f"모르는 로그 형식: {fmt!r}")
-    return (_COMMON.replace("@PARSE@", parse.strip("\n"))
-            .replace("@UUID@", _UUID_RE)
-            .replace("@CLFTIME@", _CLF_TIME_RE)
-            .replace("@ISODATE@", _ISO_DATE_RE)
-            .replace("@STATUS@", _STATUS_RE)
-            .strip("\n") + "\n")
+        spec = resolve_format(fmt, formats)
+        if not isinstance(spec, FormatSpec):
+            raise ValueError(f"모르는 로그 형식: {fmt!r}")
+        parse = _gen_parse(spec)
+    # parse()는 마지막에 한 번만 끼운다. 끼운 글자는 다시 치환되지 않는다.
+    return _fill(_COMMON).replace("@PARSE@", parse.strip("\n")).strip("\n") + "\n"

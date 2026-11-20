@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from napi.logformat import normalize_path, parse_line
-from napi.models import CustomFormat, ServerConfig, Settings
+from napi.logformat import normalize_path, parse_line, status_class
+from napi.models import CustomFormat, LogFormatDef, ServerConfig, Settings
+from napi.remote.awk_program import awk_program
 from napi.remote.command import build_pipeline, build_remote_command
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "logs"
@@ -23,6 +24,13 @@ FORMATS = {
     "nginx_combined": "nginx_access.log",
     "apache_common": "apache_common.log",
 }
+# 기본 제공 형식 5개 전부. combined 계열은 nginx fixture(.gz)를 같이 쓴다.
+BUILTIN_FIXTURES = {**FORMATS, "apache_combined": "nginx_access.log",
+                    "webtob_combined": "nginx_access.log"}
+USER_A = '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] "%r" %s'
+USER_B = "%{%d/%b/%Y:%H:%M:%S}t %m %U ?%q %s"
+USER_FORMATS = [LogFormatDef("user_a", USER_A), LogFormatDef("user_b", USER_B)]
+USER_FIXTURES = {"user_a": "user_a.log", "user_b": "user_b.log"}
 GZIPPED = "nginx_access.log"
 TOKEN = "napi-scan-00c0ffee"
 TAGS = (b"F\t", b"R\t", b"P\t", b"Q\t", b"T\t", b"E\t", b"D\t")
@@ -79,16 +87,31 @@ def linux_like(script: str) -> str:
     return script
 
 
-def run_script(bash, script: str) -> list[bytes]:
+def run_script(bash, script: str, cwd=None) -> list[bytes]:
     r = subprocess.run([bash, "-c", linux_like(script), TOKEN], capture_output=True,
-                       timeout=120)
+                       timeout=120, cwd=cwd)
     assert r.returncode == 0, r.stderr
     assert r.stdout.endswith(b"\n")
     return r.stdout[:-1].split(b"\n")
 
 
-def run_pipeline(bash, server, settings=None, since=None) -> list[bytes]:
-    return run_script(bash, build_pipeline(server, settings or Settings(), since, TOKEN))
+def run_pipeline(bash, server, settings=None, since=None, formats=(),
+                 cwd=None) -> list[bytes]:
+    return run_script(bash, build_pipeline(server, settings or Settings(), since, TOKEN,
+                                           formats), cwd)
+
+
+def is_gawk(bash) -> bool:
+    return b"GNU Awk" in subprocess.run([bash, "-c", "awk --version"],
+                                        capture_output=True).stdout
+
+
+def run_pipeline_posix(bash, server, settings=None, since=None, formats=(),
+                       cwd=None) -> list[bytes]:
+    """gawk --posix로 돌린다. gawk 전용 문법이 있으면 여기서 실패한다."""
+    script = build_pipeline(server, settings or Settings(), since, TOKEN, formats)
+    assert script.count("LC_ALL=C awk ") == 1
+    return run_script(bash, script.replace("LC_ALL=C awk ", "LC_ALL=C awk --posix "), cwd)
 
 
 # ---- Python twin: parse_line + normalize_path + 같은 키 + 404 전용 분리 + since ----
@@ -105,7 +128,7 @@ def _b(s: str) -> bytes:
 
 
 def twin(files: list[tuple[str, bytes]], fmt, custom=None, since=None,
-         max_rows=50000, top404=200) -> list[bytes]:
+         max_rows=50000, top404=200, formats=()) -> list[bytes]:
     out = []
     agg = {}
     non404 = set()
@@ -114,7 +137,7 @@ def twin(files: list[tuple[str, bytes]], fmt, custom=None, since=None,
         pf = oor = 0
         dates = []
         for rec in recs:
-            p = parse_line(rec.decode("utf-8", "surrogateescape"), fmt, custom)
+            p = parse_line(rec.decode("utf-8", "surrogateescape"), fmt, custom, formats)
             if p is None:
                 pf += 1
                 continue
@@ -122,9 +145,9 @@ def twin(files: list[tuple[str, bytes]], fmt, custom=None, since=None,
             if since is not None and p.date < since:
                 oor += 1
                 continue
-            status = f"{p.status:03d}"
+            status = "" if p.status is None else f"{p.status:03d}"  # 상태 미상 = 404 아님
             mp = (_b(p.method), _b(normalize_path(p.path)))
-            key = mp + (_b(status[0] + "xx"),)
+            key = mp + (_b(status_class(p.status)),)
             n, first, last = agg.get(key, (0, p.date, p.date))
             agg[key] = (n + 1, min(first, p.date), max(last, p.date))
             if status != "404":
@@ -575,3 +598,212 @@ def test_pipeline_key_cap_truncates(bash, tmp_path):
     assert out[-2:] == [b"Q\t0\t0", b"D\tdone"]
     (stat,) = f_lines(out)
     assert stat[4:] == [b"13", b"0", b"0"]
+
+
+# ---- Task 2: FormatSpec에서 생성한 awk parse() ----
+
+def parity(bash, server, twin_files, fmt, formats=(), since=None, posix=True,
+           cwd=None) -> list[bytes]:
+    """awk 출력이 Python twin과 바이트 단위로 같은지 본다. posix=True면 gawk --posix도."""
+    out = run_pipeline(bash, server, None, since, formats, cwd)
+    assert_same(out, twin(twin_files, fmt, since=since, formats=formats))
+    if posix and is_gawk(bash):
+        assert run_pipeline_posix(bash, server, None, since, formats, cwd) == out
+    return out
+
+
+def write_log(d: Path, name: str, data: bytes) -> list[tuple[str, bytes]]:
+    (d / name).write_bytes(data)
+    return [(posix(d) + "/" + name, data)]
+
+
+@pytest.mark.parametrize("since", [None, "20260801"])
+@pytest.mark.parametrize("fmt", list(BUILTIN_FIXTURES))
+def test_pipeline_parity_builtin_formats(bash, logdir, fmt, since):
+    name = BUILTIN_FIXTURES[fmt]
+    server = server_for(logdir, name + "*", fmt)
+    out = run_pipeline(bash, server, since=since)
+    expected = twin_dir(logdir, name, fmt, since=since)
+    assert any(x.startswith(b"R\t") for x in expected)
+    assert any(x.startswith(b"P\t") for x in expected)
+    assert_same(out, expected)
+    if is_gawk(bash):
+        assert run_pipeline_posix(bash, server, since=since) == out
+
+
+@pytest.mark.parametrize("since", [None, "20260801"])
+@pytest.mark.parametrize("fmt", list(USER_FIXTURES))
+def test_pipeline_parity_user_formats(bash, tmp_path, fmt, since):
+    d = tmp_path.resolve()
+    data = (FIXTURES / USER_FIXTURES[fmt]).read_bytes()
+    files = write_log(d, "app.log", data)
+    out = parity(bash, server_for(d, "app.log", fmt), files, fmt, USER_FORMATS, since)
+    (stat,) = f_lines(out)
+    assert int(stat[4]) == len(_records(data)) >= 10
+    assert int(stat[5]) >= 2  # 깨진 줄
+    assert stat[2] == b"20260520" and stat[3] == b"20261118"
+    if since is not None:
+        assert int(stat[6]) == 2  # 5월 줄
+    rows = [x for x in out if x.startswith(b"R\t")]
+    assert len(rows) >= 5 and any(x.startswith(b"P\t") for x in out)
+    assert any(x.startswith(b"R\tGET\t/v1/users/{*}\t2xx\t") for x in rows)
+    blob = b"\n".join(b"F" if x.startswith(b"F\t") else x for x in out)
+    for secret in (b"token", b"abc", b"550e8400", b"9981", b"778899", b"10.0.0.",
+                   b"CLIENT", b"HTTP/1.1", b"%ED", b"10:00", b"Nov", b"2026-"):
+        assert secret not in blob, secret
+
+
+def test_pipeline_no_status_format(bash, tmp_path):
+    d = tmp_path.resolve()
+    fmts = [LogFormatDef("ns", '%t "%r"')]
+    data = (b'[18/Nov/2026:10:00:00 +0900] "GET /v1/users/1 HTTP/1.1"\n'
+            b'[18/Nov/2026:10:00:01 +0900] "GET /v1/users/2 HTTP/1.1" 404 trailing\n'
+            b'[17/Nov/2026:10:00:01 +0900] "POST /v1/orders HTTP/1.1"\r\n'
+            b'[17/Nov/2026:10:00:01 +0900] "post /v1/orders HTTP/1.1"\n'
+            b'garbage\n')
+    files = write_log(d, "app.log", data)
+    # CR이 든 입력은 --posix(BINMODE 없음)로 Windows에서 비교할 수 없어 기본 모드만 본다
+    out = parity(bash, server_for(d, "app.log", "ns"), files, "ns", fmts, posix=False)
+    assert sorted(x for x in out if x.startswith(b"R\t")) == [
+        b"R\tGET\t/v1/users/{*}\t???\t2\t20261118\t20261118",
+        b"R\tPOST\t/v1/orders\t???\t1\t20261117\t20261117",
+    ]
+    assert not any(x.startswith(b"P\t") for x in out)
+    assert out[-2:] == [b"Q\t0\t0", b"D\tdone"]
+
+
+# 리터럴에 " \ } ' 제어 문자, 한글, system("...")이 든 패턴 (필수 조건은 충족)
+INJECT_TAIL = '\\"};system("touch pwned");{"\\ \'x\' \x01한'
+INJECT_A = '%t "%r" ' + INJECT_TAIL + ' %s %{a"b\\c}i'
+# 리터럴의 개행으로 awk 문장을 끊으려는 패턴
+INJECT_B = '%t "%r"\n}\nBEGIN { system("touch pwned2") }\n# %s'
+
+
+def _strip_awk_strings(prog: str) -> str:
+    return re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', prog)
+
+
+def test_pattern_cannot_inject_awk(bash, tmp_path):
+    d = tmp_path.resolve()
+    fmts = [LogFormatDef("inj", INJECT_A), LogFormatDef("inj2", INJECT_B)]
+    for name in ("inj", "inj2"):
+        prog = awk_program(name, None, fmts)
+        start = prog.index("function parse(")
+        parse_fn = prog[start:prog.index("\n}\n", start)]
+        assert parse_fn.isascii()  # 한글, 제어 문자, 개행은 \ooo로 들어간다
+        assert ("\\012" if name == "inj2" else "\\001\\355\\225\\234") in parse_fn
+        code = _strip_awk_strings(parse_fn)  # 문자열 리터럴을 지우면 패턴 글자는 남지 않는다
+        for word in ("system", "pwned", "touch", "BEGIN", "a\"b", "#", "}\n"):
+            assert word not in code, (name, word)
+        whole = _strip_awk_strings(prog)
+        assert "system" not in whole and whole.count("BEGIN") == 1
+
+    lines = [
+        '[18/Nov/2026:10:00:01 +0900] "GET /v1/a HTTP/1.1" ' + INJECT_TAIL + ' 200 z',
+        '[18/Nov/2026:10:00:02 +0900] "GET /v1/a HTTP/1.1"  ' + INJECT_TAIL + '\t404',
+        '[18/Nov/2026:10:00:03 +0900] "GET /v1/b HTTP/1.1" ' + INJECT_TAIL + ' 503 "x"',
+        '[18/Nov/2026:10:00:04 +0900] "GET /v1/c HTTP/1.1" '
+        + INJECT_TAIL.replace("한", "x") + ' 200',
+        '[18/Nov/2026:10:00:05 +0900] "GET /v1/d HTTP/1.1" '
+        + INJECT_TAIL.replace("\\", "/") + ' 200',
+        '[18/Nov/2026:10:00:06 +0900] "GET /v1/e HTTP/1.1"',
+    ]
+    files = write_log(d, "app.log", ("\n".join(lines) + "\n").encode("utf-8"))
+    out = parity(bash, server_for(d, "app.log", "inj"), files, "inj", fmts, cwd=d)
+    assert sorted(x for x in out if x.startswith(b"R\t")) == [
+        b"R\tGET\t/v1/a\t2xx\t1\t20261118\t20261118",
+        b"R\tGET\t/v1/a\t4xx\t1\t20261118\t20261118",
+        b"R\tGET\t/v1/b\t5xx\t1\t20261118\t20261118",
+    ]
+    out2 = parity(bash, server_for(d, "app.log", "inj2"), files, "inj2", fmts, cwd=d)
+    assert f_lines(out2)[0][5] == b"6"  # 줄에는 \n이 없으므로 모두 실패
+    assert out2[-1] == b"D\tdone"
+    assert not list(d.glob("pwned*"))
+    assert not list(Path.cwd().glob("pwned*"))
+
+
+EDGE_FORMATS = [
+    # 빈 값 허용(lit 앞), 다음 lit 없음, %b 대소문자, 마지막 %s 뒤 꼬리
+    ("%{%d/%b/%Y}t|%m|%U|%s", [
+        "18/Nov/2026|GET|/a|200", "18/Nov/2026|GET||201", "18/nov/2026|GET|/a|200",
+        "18/Nov/2026|GET|/a|200|x", "18/Nov/2026|GET|/a", "18/Nov/2026|GET|/a|",
+        "18/Nov/2026||/a|200", "18/Nov/2026|GE T|/a|200", "1/Nov/2026|GET|/a|200",
+        "18/Nov/2026|GET|/a|404"]),
+    # 같은 날짜 항목 반복(나중 것이 이김), 레이아웃 리터럴과 H는 비교하지 않음
+    ('%{%m %b %d %Y %H}t "%r"', [
+        '11 Dec 05 2026 10 "GET /a HTTP/1.1"', '1x Dec 05 2026 10 "GET /a HTTP/1.1"',
+        '11XDecX05X2026Xzz "GET /b HTTP/1.1"', '11 Dex 05 2026 10 "GET /a HTTP/1.1"',
+        '11 Dec 05 2026 10"GET /a HTTP/1.1"', '11 Dec 05 2026 1']),
+    # 멀티바이트 레이아웃과 리터럴
+    ('%{%Y년%m월%d일}t "%r" %s', [
+        '2026년11월18일 "GET /a HTTP/1.1" 200', '2026년11월18일  "GET /a HTTP/1.1"\t302',
+        '2026-11-18 "GET /a HTTP/1.1" 200', '2026년11월18 "GET /a HTTP/1.1" 200']),
+    # tfmt 폭이 글자 중간에서 끝남: 뒤 토큰이 있으면 실패
+    ('%{%Y-%m-%dX}t "%r"', ['2026-11-18가 "GET /a HTTP/1.1"', '2026-11-18X"GET /a b"',
+                            '2026-11-18X "GET /a b"']),
+    # ... 마지막 필수 토큰이면 성공
+    ('"%r" %{%Y-%m-%dX}t', ['"GET /a HTTP/1.1" 2026-11-18가', '"GET /a b" 2026-11-18',
+                            '"GET /a b" 2026-11-1', '"GET /c b"\t2026-11-18Xtrailing',
+                            '"GET /d b" 2026-11-18X']),  # 남은 바이트 = 폭
+    ('%{%Y-%m-%d}t "%r"', ['2026-11-18 "GET /a b"', '2026-11-1', '2026-11-18',
+                           'x2026-11-18 "GET /a b"']),
+    # ws로 시작하는 패턴
+    (' %t "%r"', [' [18/Nov/2026:10:00:00 +0900] "GET /a HTTP/1.1"',
+                  '[18/Nov/2026:10:00:00 +0900] "GET /a HTTP/1.1"',
+                  '\t \t[18/Nov/2026:10:00:00 +0900] "GET /b x"']),
+    # %r이 마지막 토큰이면 줄 끝까지
+    ('%t %s %r', ['[18/Nov/2026:10:00:01 +0900] 200 GET /a HTTP/1.1',
+                  '[18/Nov/2026:10:00:01 +0900] 200   PUT   /b  ',
+                  '[18/Nov/2026:10:00:01 +0900] 200 GET',
+                  '[18/Nov/2026:10:00:01 +0900]  404\tGET /c',
+                  '[18/Nov/2026:10:00:01 +0900] 200']),
+    # 한글 리터럴 + %m %U
+    ('%t 요청=%m 경로=%U 상태=%s', [
+        '[18/Nov/2026:10:00:00 +0900] 요청=GET 경로=/v1/검색 상태=200',
+        '[18/Nov/2026:10:00:00 +0900]\t요청=POST  경로=/v1/x\t상태=201',
+        '[18/Nov/2026:10:00:00 +0900] 요청:GET 경로=/v1/검색 상태=200',
+        '[18/Nov/2026:10:00:00 +0900] 요청=GET 경로= 상태=200']),
+    # %t 경계: ] 위치, 짧은 값
+    ('%t "%r"', ['[18/Nov/2026] "GET /a HTTP/1.1"', '[18/Nov]/2026:1 "GET /a HTTP/1.1"',
+                 '[18/Nov/202] "GET /a HTTP/1.1"', '[18/Nov/2026:10:00:00 +0900 "GET /a b"',
+                 '18/Nov/2026:10:00:00 +0900] "GET /a b"', '[18/Abc/2026:1] "GET /a b"',
+                 '[18/Nov/2026:10:00:00 +0900]"GET /a b"']),
+    # ws 앞 필드: 줄 끝이면 빈 값이라 실패
+    ('%t "%r" %s %b', ['[18/Nov/2026:10:00:00 +0900] "GET /a b" ',
+                       '[18/Nov/2026:10:00:00 +0900] "GET /a b" 200',
+                       '[18/Nov/2026:10:00:00 +0900] "GET /a b" 200 ',
+                       '[18/Nov/2026:10:00:00 +0900] "GET /a b"200 1']),
+    # 리터럴의 역슬래시와 따옴표, 퍼센트
+    ('%t \\"%r\\" 100%% %>s', ['[18/Nov/2026:10:00:00 +0900] \\"GET /a b\\" 100% 200',
+                              '[18/Nov/2026:10:00:00 +0900] "GET /a b" 100% 200',
+                              '[18/Nov/2026:10:00:00 +0900] \\"GET /a b\\" 100 200']),
+    # %<s, 반복되는 %r (나중 것이 이김)
+    ('%t "%r" "%r" %<s', ['[18/Nov/2026:10:00:00 +0900] "GET /a b" "POST /c d" 201',
+                          '[18/Nov/2026:10:00:00 +0900] "GET /a b" "post /c d" 201']),
+]
+
+
+@pytest.mark.parametrize("pattern,lines", EDGE_FORMATS)
+def test_pipeline_parity_edge_formats(bash, tmp_path, pattern, lines):
+    d = tmp_path.resolve()
+    fmts = [LogFormatDef("edge", pattern)]
+    files = write_log(d, "app.log", ("\n".join(lines) + "\n").encode("utf-8"))
+    out = parity(bash, server_for(d, "app.log", "edge"), files, "edge", fmts)
+    (stat,) = f_lines(out)
+    assert 0 < int(stat[5]) < len(lines)  # 성공과 실패가 모두 있다
+
+
+def test_pipeline_parity_raw_bytes_and_crlf(bash, tmp_path):
+    """깨진 UTF-8 바이트, 그 바이트를 지나가는 리터럴 검색, CRLF, 개행 없는 끝 줄."""
+    d = tmp_path.resolve()
+    fmts = [LogFormatDef("raw", '%t [%r]가 %s'), LogFormatDef("crlf", '%t "%r" %s')]
+    data = (b'[18/Nov/2026:10:00:00 +0900] [GET /a\xff\xfe x]\xea\xb0]\xea\xb0\x80 200\n'
+            b'[18/Nov/2026:10:00:00 +0900] [GET /b x]\xea\xb0\x80 404\r\n'
+            b'[18/Nov/2026:10:00:00 +0900] [GET /c x]\xea\xb0 200\n'
+            b'[18/Nov/2026:10:00:00 +0900] [GET /d\x80 x]\xea\xb0\x80 200\r\r\n'
+            b'[18/Nov/2026:10:00:00 +0900] "GET /e x" 200\r\n'
+            b'[18/Nov/2026:10:00:00 +0900] [GET /f x]\xea\xb0\x80 201')
+    files = write_log(d, "app.log", data)
+    for name in ("raw", "crlf"):
+        out = parity(bash, server_for(d, "app.log", name), files, name, fmts, posix=False)
+        assert any(x.startswith(b"R\t") for x in out)

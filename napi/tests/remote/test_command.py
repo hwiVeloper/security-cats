@@ -3,11 +3,17 @@ import shlex
 
 import pytest
 
-from napi.models import CustomFormat, ServerConfig, Settings
+from napi.logformat import BUILTIN_FORMATS, FormatError
+from napi.models import CustomFormat, LogFormatDef, ServerConfig, Settings
 from napi.remote.awk_program import awk_program
 from napi.remote.command import build_pipeline, build_remote_command, split_glob
 
 TOKEN = "napi-scan-0a1b2c3d"
+USER_FORMATS = [
+    LogFormatDef("my", '[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] "%r" %s'),
+    LogFormatDef("my_b", "%{%d/%b/%Y:%H:%M:%S}t %m %U ?%q %s"),
+]
+ALL_FORMATS = [*BUILTIN_FORMATS, "my", "my_b"]
 
 
 def make_server(**kw):
@@ -127,12 +133,12 @@ def test_command_is_read_only(since, fmt, custom):
 
 
 @pytest.mark.parametrize("fmt,custom", [
-    ("webtob", None),
+    *((f, None) for f in ALL_FORMATS),
     ("custom", CustomFormat(method_field=2, path_field=3, status_field=4,
                             time_field=1, time_format="clf")),
 ])
 def test_awk_program_writes_no_files(fmt, custom):
-    prog = awk_program(fmt, custom)
+    prog = awk_program(fmt, custom, USER_FORMATS)
     assert not re.search(r"print[f]?[^\n;{}]*>", prog)
     assert ">>" not in prog
     assert "system(" not in prog
@@ -144,8 +150,9 @@ def test_awk_program_writes_no_files(fmt, custom):
     }
 
 
-def test_awk_program_has_no_gawk_extensions():
-    prog = awk_program("nginx_combined", None)
+@pytest.mark.parametrize("fmt", ALL_FORMATS)
+def test_awk_program_has_no_gawk_extensions(fmt):
+    prog = awk_program(fmt, None, USER_FORMATS)
     for ext in ("gensub", "asort", "strftime", "systime", "FPAT", "IGNORECASE",
                 "PROCINFO", "BEGINFILE", "ENDFILE", "**", "@include"):
         assert ext not in prog, ext
@@ -189,3 +196,55 @@ def test_command_rejects_zero_max_rows():
     with pytest.raises(ValueError):
         build_pipeline(make_server(), Settings(max_rows=0), None, TOKEN)
     assert "MAXKEYS=4 " in build_pipeline(make_server(), Settings(max_rows=1), None, TOKEN)
+
+
+def test_awk_program_has_no_clf_parser():
+    """v1 CLF 전용 파서는 없어졌다. 기본 제공 형식도 생성한 parse()를 쓴다."""
+    import napi.remote.awk_program as mod
+    assert not hasattr(mod, "_PARSE_CLF")
+    for fmt in BUILTIN_FORMATS:
+        prog = awk_program(fmt, None)
+        assert "match(line, /\\[" not in prog
+        assert prog.count("function parse(") == 1
+    assert awk_program("apache_common", None) == awk_program("apache_common", None, USER_FORMATS)
+
+
+def test_command_passes_formats():
+    server = make_server(log_format="my")
+    prog_q = shlex.quote(awk_program("my", None, USER_FORMATS))
+    script = build_pipeline(server, Settings(), None, TOKEN, USER_FORMATS)
+    assert script.count(prog_q) == 1
+    cmd = build_remote_command(server, Settings(), None, TOKEN, formats=USER_FORMATS)
+    assert cmd.count(shlex.quote(script)) == 1
+    assert "[CLIENT(" in prog_q
+    # 이름을 모르면 FormatError (ValueError)
+    for bad_server, fmts in ((make_server(log_format="nope"), USER_FORMATS),
+                             (server, ())):
+        with pytest.raises(FormatError, match="모르는 로그 형식이에요"):
+            build_remote_command(bad_server, Settings(), None, TOKEN, formats=fmts)
+        with pytest.raises(ValueError):
+            build_pipeline(bad_server, Settings(), None, TOKEN, fmts)
+    # 기본 제공 형식 이름이 사용자 형식보다 먼저다
+    shadow = [LogFormatDef("webtob", '%t "%r"')]
+    assert awk_program("webtob", None, shadow) == awk_program("webtob", None)
+
+
+@pytest.mark.parametrize("since", [None, "20260522"])
+def test_command_with_user_format_is_read_only(since):
+    server = make_server(log_format="my")
+    prog_q = shlex.quote(awk_program("my", None, USER_FORMATS))
+    script = build_pipeline(server, Settings(), since, TOKEN, USER_FORMATS)
+    text = script.replace(prog_q, "AWK_PROGRAM")
+    assert set(re.findall(r"[0-9]*>+&?[^\s;|&)]*", text)) <= {">/dev/null", "2>/dev/null"}
+
+
+def test_awk_string_literal_escaping():
+    """패턴 리터럴은 ASCII awk 문자열로만 들어간다: \\ " 는 역슬래시로, 제어 문자와
+    비ASCII 바이트, @(자리표시자 문자)는 3자리 8진수로."""
+    from napi.remote.awk_program import _awk_str
+    assert _awk_str('a"b\\c') == r'"a\"b\\c"'
+    assert _awk_str("x\x01\n\t\x7f\x00") == r'"x\001\012\011\177\000"'
+    assert _awk_str("가") == r'"\352\260\200"'
+    assert _awk_str("@PARSE@ / }{ ' $1") == r'''"\100PARSE\100 / }{ ' $1"'''
+
+

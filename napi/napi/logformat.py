@@ -93,9 +93,6 @@ PRESETS: dict[str, str] = {
     "custom": "직접 지정 (필드 번호)",
 }
 
-# Task 2 전까지 원격 awk_program이 v1 CLF 파서를 고를 때 쓴다.
-_CLF_FORMATS = ("apache_common", "apache_combined", "nginx_combined", "webtob")
-
 _MONTHS = {m: f"{i:02d}" for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
