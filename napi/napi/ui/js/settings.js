@@ -25,7 +25,7 @@
   var TIER_NOTICE = "한 서비스에는 같은 요청을 한 번만 기록하는 서버(같은 계층)만 넣어 주세요";
   var SECRET_HINT = "저장되지 않아요. 프로그램을 끄면 사라져요";
   var SECRET_SET = "이번 실행 동안 입력됨 ✓";
-  var GLOB_HINT = "경로마다 /로 시작하는 전체 경로를 적어요. 디렉터리에도 * ? [ 를 쓸 수 있어요 (예: /data/*/logs/access.log*). .gz 파일도 읽어요.";
+  var GLOB_HINT = "경로마다 /로 시작하는 전체 경로를 적어요. 디렉터리에도 * ? [ 를 쓸 수 있어요 (예: /data/*/logs/access.log*, 맨 앞 조각과 숨김 폴더는 제외). .gz 파일도 읽어요.";
   var FORMATS_TAB = "formats"; // ui.sel: 로그 형식 탭
 
   var ui = null; // 열려 있는 설정 화면
@@ -245,6 +245,7 @@
     var cut = g.lastIndexOf("/");
     var dir = g.slice(0, cut + 1); // 끝의 "/"까지 (파일 이름 바로 앞의 "//"도 본다)
     if (/\/\/|\/\.\/|\/\.\.\//.test(dir)) return "경로에 // 나 . / .. 를 쓸 수 없어요.";
+    if (/[*?\[]/.test(g.split("/")[1] || "") && g.indexOf("/", 1) !== -1) return "최상위 디렉터리(맨 앞 조각)에는 * ? [ 를 쓸 수 없어요.";
     if (cut === g.length - 1) return "파일 이름 패턴을 끝에 적어 주세요 (예: access.log*).";
     return null;
   }

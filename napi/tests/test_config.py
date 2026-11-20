@@ -511,3 +511,9 @@ def test_legacy_custom_format_only_inherited_by_custom_paths(tmp_path):
         " time_field: 4, time_format: clf}\n", encoding="utf-8")
     paths = load_config(p).services[0].servers[0].log_paths
     assert [x.custom_format for x in paths] == [None, None]
+
+
+def test_validate_rejects_wildcard_in_first_segment():
+    errs = _glob_errs("/*/logs/a.log")
+    assert len(errs) == 1 and "최상위" in errs[0] and "/*/logs/a.log" in errs[0]
+    assert _glob_errs("/a*") == []  # 디렉터리 없이 파일 이름만이면 괜찮다

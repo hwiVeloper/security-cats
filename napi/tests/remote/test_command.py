@@ -310,23 +310,36 @@ def test_find_args_plain_directory_unchanged():
         "find", "/webtob/log", "-maxdepth", "1", "-type", "f", "-name", "'access.log*'"]
 
 
-@pytest.mark.parametrize("glob,start,depth", [
-    ("/data/*/logs/access.log*", "/data", 3),
-    ("/*/logs/a.log", "/", 3),
-    ("/var/log/app?/x/*.log", "/var/log", 3),
-    ("/var/[ab]*/a", "/var", 2),
+@pytest.mark.parametrize("glob,start,depth,hidden", [
+    ("/data/*/logs/access.log*", "/data", 3, ["/data/.*/logs/access.log*"]),
+    ("/var/log/app?/x/*.log", "/var/log", 3, ["/var/log/.*/x/*.log"]),
+    ("/var/[ab]*/a", "/var", 2, ["/var/.*/a"]),
+    ("/d/*/*/f", "/d", 3, ["/d/.*/*/f", "/d/*/.*/f"]),
+    ("/d/.sn*/f", "/d", 2, []),  # 패턴이 "."으로 시작하면 숨김 폴더를 원한 것
 ])
-def test_find_args_directory_wildcards(glob, start, depth):
+def test_find_args_directory_wildcards(glob, start, depth, hidden):
     from napi.remote.command import find_args
     args = find_args(glob)
-    assert args == ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
-                    "-type", "f", "-path", shlex.quote(glob)]
-    assert shlex.split(" ".join(args))[-1] == glob  # 셸을 거쳐도 패턴 그대로 (펼쳐지지 않음)
+    expected = ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
+                "-type", "f", "-path", shlex.quote(glob)]
+    for h in hidden:
+        expected += ["!", "-path", shlex.quote(h)]
+    assert args == expected
+    assert shlex.split(" ".join(args))[9] == glob  # 셸을 거쳐도 패턴 그대로 (펼쳐지지 않음)
+
+
+@pytest.mark.parametrize("glob", ["/*/logs/a.log", "/l?g/x/a", "/[a]/b/c"])
+def test_find_args_rejects_wildcard_in_first_segment(glob):
+    from napi.remote.command import find_args
+    with pytest.raises(ValueError, match="최상위"):
+        find_args(glob)
+    with pytest.raises(ValueError):
+        build_pipeline(make_server(log_globs=[glob]), Settings(), None, TOKEN)
 
 
 def test_find_args_hostile_directory_glob_is_quoted():
     from napi.remote.command import find_args
     glob = "/data/*$(id)`x`;rm -rf ~/a*"
     words = shlex.split(" ".join(find_args(glob)))
-    assert words[1] == "/data" and words[-1] == glob
+    assert words[1] == "/data" and words[9] == glob
     build_pipeline(make_server(log_globs=[glob]), Settings(), None, TOKEN)  # 거부하지 않고 인용만

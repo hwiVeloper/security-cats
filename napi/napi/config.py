@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from .logformat import BUILTIN_FORMATS, FormatError, compile_format
-from .remote.command import split_glob
+from .remote.command import find_args
 from .models import (
     AppConfig, CustomFormat, LogFormatDef, LogPath, Note, PathMapping, ServerConfig, ServiceConfig,
     Settings, SpecSource, Thresholds,
@@ -272,7 +272,7 @@ def validate_config(cfg: AppConfig) -> list[str]:
 
 
 def _glob_problem(glob: str) -> str | None:
-    """로그 경로 하나의 오류 문구 (끝에 ": <경로>"). 통과하면 스캔 때 split_glob도 통과한다.
+    """로그 경로 하나의 오류 문구 (끝에 ": <경로>"). 통과하면 스캔 때 find_args도 통과한다.
     napi/ui/js/settings.js의 globProblem과 같은 규칙이다."""
     if _GLOB_CONTROL_RE.search(glob):
         return f"로그 경로에 제어 문자를 쓸 수 없습니다: {glob}"
@@ -284,7 +284,7 @@ def _glob_problem(glob: str) -> str | None:
     if any(part in directory for part in ("//", "/./", "/../")):
         return f"경로에 // 나 . / .. 를 쓸 수 없어요: {glob}"
     try:
-        split_glob(glob)
+        find_args(glob)
     except ValueError as e:
         reason = str(e).split(": ", 1)[0]  # 끝의 repr(경로)는 떼고 ": <경로>"로 붙인다
         return f"로그 경로를 쓸 수 없습니다 — {reason}: {glob}"

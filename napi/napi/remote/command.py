@@ -70,10 +70,22 @@ def find_args(log_glob: str) -> list[str]:
                 "-name", shlex.quote(pattern)]
     parts = log_glob.split("/")[1:]  # 맨 앞 "" 제외
     first = next(i for i, part in enumerate(parts) if any(ch in part for ch in _GLOB_CHARS))
+    if first == 0:
+        # "/*/..."는 find를 "/"에서 시작해 /proc, /sys, NFS 마운트까지 열게 된다 (멈출 수 있다)
+        raise ValueError(f"최상위 디렉터리에는 * ? [ 를 쓸 수 없어요: {log_glob!r}")
     start = "/" + "/".join(parts[:first])
     depth = len(parts) - first
-    return ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
+    args = ["find", shlex.quote(start), "-mindepth", str(depth), "-maxdepth", str(depth),
             "-type", "f", "-path", shlex.quote(log_glob)]
+    # 셸의 *처럼 숨김 디렉터리(.snapshot 등)는 와일드카드로 고르지 않는다. 같은 로그의 사본이
+    # 다른 경로로 잡혀 두 번 세지는 것을 막는다. 와일드카드 디렉터리 조각마다 그 자리가
+    # "."으로 시작하는 경로를 뺀다 (패턴이 스스로 "."으로 시작하면 사용자가 원한 것이므로 둔다).
+    for i in range(first, len(parts) - 1):
+        part = parts[i]
+        if any(ch in part for ch in _GLOB_CHARS) and not part.startswith("."):
+            hidden = "/" + "/".join([*parts[:i], ".*", *parts[i + 1:]])
+            args += ["!", "-path", shlex.quote(hidden)]
+    return args
 
 
 def _int(name: str, value: object, minimum: int) -> int:

@@ -708,10 +708,24 @@ def test_pipeline_directory_wildcard_fixed_depth(bash, tmp_path):
     (d / "access.log").write_bytes(data)                              # 얕음: 제외
     (d / "app4").mkdir()
     (d / "app4" / "logs").write_bytes(data)                           # 디렉터리 자리의 파일: 제외
+    (d / ".snapshot" / "logs").mkdir(parents=True)
+    (d / ".snapshot" / "logs" / "access.log").write_bytes(data)       # 숨김 폴더: 제외
     server = server_globs([posix(d) + "/*/logs/access.log*"], "webtob")
     out = parity(bash, server, files, "webtob")
     paths = sorted(x[1] for x in f_lines(out))
     assert paths == sorted(_b(f) for f, _ in files)
+
+
+def test_pipeline_literal_and_wildcard_overlap_first_wins(bash, tmp_path):
+    """같은 파일이 리터럴 경로와 와일드카드 경로에 다 걸리면 F 줄 하나, 위쪽 경로의 형식."""
+    d = tmp_path.resolve()
+    (d / "app1" / "logs").mkdir(parents=True)
+    data = (FIXTURES / "webtob_access.log").read_bytes()
+    files = write_log(d / "app1" / "logs", "access.log", data)
+    server = server_globs([posix(d) + "/app1/logs/access.log*",
+                           posix(d) + "/*/logs/access.log*"], "webtob")
+    out = parity(bash, server, files, "webtob")
+    assert len(f_lines(out)) == 1
 
 
 def test_pipeline_no_status_format(bash, tmp_path):
