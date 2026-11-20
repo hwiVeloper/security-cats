@@ -232,6 +232,24 @@ table{border-collapse:collapse}
 .cmd-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px}
 .cmd-head h4{margin:0;font-size:13px}
 .empty-note{color:var(--muted);text-align:center;padding:30px 0}
+/* 로그 경로 목록, 키파일 불러오기, 비밀번호 상태, 로그 형식 탭 */
+.with-btn{display:flex;gap:6px;align-items:center;min-width:0}
+.with-btn input{flex:1}
+.with-btn .btn{flex-shrink:0;white-space:nowrap}
+.glob-row{display:flex;gap:6px;align-items:center;min-width:0}
+.glob-row input{flex:1}
+.glob-row .btn{flex-shrink:0}
+.glob-list > div:not(.glob-row){margin-top:2px}
+.secret-state{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}
+.secret-ok{color:var(--awake);font-weight:700}
+.field input.mono{font-family:Consolas,monospace}
+.set-list .fmt-tab{margin-top:12px;border-top:1px dashed var(--line);border-radius:0 0 10px 10px;padding-top:11px}
+.fmt-builtin{width:100%;font-size:12px}
+.fmt-builtin th{text-align:left;color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);padding:4px 6px}
+.fmt-builtin td{border-bottom:1px solid #f6efe7;padding:4px 6px;overflow-wrap:anywhere}
+.fmt-builtin td.mono{white-space:nowrap}
+.fmt-builtin td:last-child{white-space:normal;word-break:break-all}
+.fmt-used{align-self:center;overflow-wrap:anywhere}
 
 /* ===== report (Task 10) ===== */
 .napi-report{max-width:1180px;margin:0 auto;background:var(--panel)}

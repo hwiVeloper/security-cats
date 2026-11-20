@@ -10,6 +10,12 @@
  *   3번째 서버는 "인증 실패"로 끝난다.
  *   명세 출처가 "파일"인 서비스는 명세 단계에서 실패한다 (failed 화면 확인용).
  * - save_config는 napi/config.py validate_config와 같은 문구로 검사한다.
+ *
+ * 형식·경로·비밀번호 (Task 5):
+ * - 사용자 형식 "webtob_vhost"를 정산 API의 SETTLE-01이 쓴다 (삭제 불가 확인용). SETTLE-01은 로그 경로가 2개다.
+ * - test_format / test_log_line은 logformat.py를 줄인 JS 판이다 (리터럴, 공백, [시각], %{...}t, %r/%m/%U/%s).
+ * - 비밀번호·키파일 암호는 "입력됨" 표시만 둔다 (값은 어디에도 두지 않는다). secret_status, clear_secret 흉내.
+ * - pick_key_file은 고정 경로를 고른 것처럼 돌려준다.
  */
 (function (root) {
   "use strict";
@@ -153,12 +159,13 @@
   var config = {
     version: 1,
     settings: { max_parallel_servers: 2, default_window: "365", remote_timeout_sec: 3600, max_rows: 50000, top_404: 200 },
+    log_formats: [{ name: "webtob_vhost", pattern: '%v %h %l %u %t "%r" %s %b' }],
     services: [
       {
         name: "라운드페이 API",
         spec: { type: "openapi", source: "url", location: "https://swagger.test.local/roundpay/v3/api-docs" },
         servers: SERVERS.map(function (n, i) {
-          return { name: n, host: "10.0.12." + (11 + i), user: "napi", log_glob: "/logs/webtob/access.log*", port: 22,
+          return { name: n, host: "10.0.12." + (11 + i), user: "napi", log_globs: ["/logs/webtob/access.log*"], port: 22,
             auth: "password", key_file: null, log_format: "webtob", custom_format: null };
         }),
         path_mapping: { strip_prefix: "", add_prefix: "" },
@@ -172,8 +179,8 @@
       {
         name: "정산 API",
         spec: { type: "openapi", source: "file", location: "C:\\specs\\settle.yaml" },
-        servers: [{ name: "SETTLE-01", host: "10.0.20.5", user: "napi", log_glob: "/logs/access.log*", port: 22,
-          auth: "key", key_file: "C:\\Users\\napi\\.ssh\\id_ed25519", log_format: "webtob", custom_format: null }],
+        servers: [{ name: "SETTLE-01", host: "10.0.20.5", user: "napi", log_globs: ["/logs/access.log*", "/logs/archive/access.log*.gz"],
+          port: 22, auth: "key", key_file: "C:\\Users\\napi\\.ssh\\id_ed25519", log_format: "webtob_vhost", custom_format: null }],
         path_mapping: { strip_prefix: "", add_prefix: "" },
         thresholds: { awake_days: 30, min_coverage_days: 90 },
         exclude_paths: [], notes: {}
@@ -257,6 +264,18 @@
   function validate(cfg) {
     var errors = [];
     var seen = {};
+    var known = { custom: true };
+    Object.keys(BUILTIN_PATTERNS).forEach(function (k) { known[k] = true; });
+    var fseen = {};
+    (cfg.log_formats || []).forEach(function (f) {
+      var label = "로그 형식 '" + f.name + "'";
+      if (!String(f.name || "").trim()) errors.push("로그 형식 이름이 비어 있습니다.");
+      else if (known[f.name]) errors.push(label + ": 기본 제공 형식 이름과 같아서 쓸 수 없습니다.");
+      else if (fseen[f.name]) errors.push(label + ": 형식 이름이 중복되었습니다.");
+      fseen[f.name] = true;
+      try { mockCompile(String(f.pattern || "")); } catch (e) { errors.push(label + ": " + e.message); }
+    });
+    Object.keys(fseen).forEach(function (k) { known[k] = true; });
     (cfg.services || []).forEach(function (svc) {
       var label = "서비스 '" + svc.name + "'";
       if (!String(svc.name || "").trim()) errors.push("서비스 이름이 비어 있습니다.");
@@ -264,12 +283,17 @@
       seen[svc.name] = true;
       (svc.servers || []).forEach(function (sv) {
         var sl = label + " / 서버 '" + sv.name + "'";
-        var glob = String(sv.log_glob || "");
         if (!String(sv.host || "").trim()) errors.push(sl + ": 호스트가 비어 있습니다.");
         if (sv.auth === "key" && !sv.key_file) errors.push(sl + ": 키 인증인데 키 파일이 지정되지 않았습니다.");
+        if (!known[sv.log_format]) errors.push(sl + ": 모르는 로그 형식이에요: " + sv.log_format);
         if (sv.log_format === "custom" && !sv.custom_format) errors.push(sl + ": 로그 형식이 custom인데 사용자 정의 형식이 없습니다.");
-        if (glob.charAt(0) !== "/") errors.push(sl + ": 로그 경로는 '/'로 시작해야 합니다.");
-        else if (glob.slice(0, glob.lastIndexOf("/")).indexOf("*") >= 0) errors.push(sl + ": 로그 경로의 디렉터리 부분에는 '*'를 쓸 수 없습니다.");
+        var globs = sv.log_globs || [];
+        if (!globs.length) errors.push(sl + ": 로그 경로를 하나 이상 지정해야 합니다.");
+        globs.forEach(function (glob) {
+          glob = String(glob);
+          if (glob.charAt(0) !== "/") errors.push(sl + ": 로그 경로는 '/'로 시작해야 합니다: " + glob);
+          else if (/[*?\[]/.test(glob.slice(0, glob.lastIndexOf("/")))) errors.push(sl + ": 로그 경로의 디렉터리 부분에는 * ? [ 를 쓸 수 없습니다: " + glob);
+        });
       });
     });
     return errors;
@@ -297,14 +321,146 @@
     });
     return "/" + segs.join("/");
   }
-  function parseClf(line) {
-    var t = /\[([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(line);
-    var q = /"([^"]*)"[ \t]+([0-9]{3})(?:[ \t]|$)/.exec(line);
-    if (!t || !q || !MONTHS[t[2]]) return null;
-    var tok = q[1].trim().split(/[ \t]+/);
-    if (tok.length < 2 || !/^[A-Z]+$/.test(tok[0])) return null;
-    return { method: tok[0], path: tok[1], status: +q[2], date: t[3] + MONTHS[t[2]] + t[1] };
+  var BUILTIN_PATTERNS = {
+    apache_common: '%h %l %u %t "%r" %>s %b',
+    apache_combined: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
+    nginx_combined: '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
+    webtob: '%h %l %u %t "%r" %s %b',
+    webtob_combined: '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"'
+  };
+  var TIME_WIDTHS = { Y: 4, m: 2, d: 2, H: 2, M: 2, S: 2, b: 3, z: 5, y: 2 };
+  var REQUIRED = "API 호출을 셀 수 없는 형식이에요 (요청/시각 필요)";
+
+  // compile_format의 간이판 (글자는 1바이트로 친다). 잘못되면 Error(한국어 문구).
+  function mockCompile(pattern) {
+    if (/[\x00-\x08\x0a-\x1f]/.test(pattern)) throw new Error("형식에 쓸 수 없는 문자가 있어요");
+    var tokens = [], lit = "", i = 0, n = pattern.length;
+    function pushLit() {
+      lit.split(/([ \t]+)/).forEach(function (part, k) { if (part) tokens.push({ kind: k % 2 ? "ws" : "lit", text: part }); });
+      lit = "";
+    }
+    while (i < n) {
+      var c = pattern.charAt(i);
+      if (c !== "%") { lit += c; i++; continue; }
+      var j = i + 1;
+      if (pattern.charAt(j) === "%") { lit += "%"; i = j + 1; continue; }
+      if (pattern.charAt(j) === "<" || pattern.charAt(j) === ">") j++;
+      var arg = null;
+      if (pattern.charAt(j) === "{") {
+        var k = pattern.indexOf("}", j + 1);
+        if (k < 0) throw new Error("닫히지 않은 %{ 가 있어요");
+        arg = pattern.slice(j + 1, k);
+        j = k + 1;
+      }
+      var letter = pattern.charAt(j);
+      var text = pattern.slice(i, j + 1);
+      i = j + 1;
+      var last = tokens[tokens.length - 1];
+      if (lit) pushLit();
+      else if (last && last.kind === "field") throw new Error("필드 사이에 구분 문자가 필요해요: " + last.text + text);
+      if (letter === "t" && arg !== null) tokens.push(timeToken(text, arg));
+      else tokens.push({ kind: "field", text: text, d: letter && "hlutrmUqHsbBDTio".indexOf(letter) >= 0 ? letter : "skip" });
+    }
+    if (lit) pushLit();
+    var dirs = {};
+    tokens.forEach(function (t, idx) {
+      if (t.kind !== "field") return;
+      dirs[t.d === "tfmt" ? (t.layout.length ? "tdate" : "tfmt") : t.d] = true;
+      var nx = tokens[idx + 1];
+      if (t.d === "r" && nx && nx.kind === "ws") throw new Error('%r은 따옴표로 감싸 주세요 (예: "%r")');
+    });
+    if (!((dirs.r || (dirs.m && dirs.U)) && (dirs.t || dirs.tdate))) throw new Error(REQUIRED);
+    var lastEssential = -1;
+    tokens.forEach(function (t, idx) {
+      if (t.kind === "field" && ("rmUst".indexOf(t.d) >= 0 || (t.d === "tfmt" && t.layout.length))) lastEssential = idx;
+    });
+    return { tokens: tokens, lastEssential: lastEssential };
   }
+
+  function timeToken(text, arg) {
+    var layout = [], off = 0, i = 0;
+    while (i < arg.length) {
+      if (arg.charAt(i) !== "%") { off++; i++; continue; }
+      var d = arg.charAt(i + 1);
+      i += 2;
+      if (d === "%") { off++; continue; }
+      if (!TIME_WIDTHS[d]) throw new Error("시각 형식에서 지원하지 않는 지시자예요: %" + d);
+      if ("Ymdb".indexOf(d) >= 0) layout.push([d, off, TIME_WIDTHS[d]]);
+      off += TIME_WIDTHS[d];
+    }
+    var keys = layout.map(function (x) { return x[0]; }).join("");
+    var full = keys.indexOf("Y") >= 0 && keys.indexOf("d") >= 0 && (keys.indexOf("m") >= 0 || keys.indexOf("b") >= 0);
+    return { kind: "field", text: text, d: "tfmt", layout: full ? layout : [], width: off };
+  }
+
+  // parse_with_spec의 간이판. 읽을 수 없으면 null.
+  function mockParse(line, spec) {
+    var toks = spec.tokens, pos = 0, method = null, path = null, status = null, date = null;
+    for (var idx = 0; idx <= spec.lastEssential; idx++) {
+      var t = toks[idx];
+      if (t.kind === "lit") {
+        if (line.slice(pos, pos + t.text.length) !== t.text) return null;
+        pos += t.text.length;
+        continue;
+      }
+      if (t.kind === "ws") {
+        var w = /^[ \t]+/.exec(line.slice(pos));
+        if (!w) return null;
+        pos += w[0].length;
+        continue;
+      }
+      if (t.d === "t") {
+        if (line.charAt(pos) !== "[") return null;
+        var close = line.indexOf("]", pos);
+        var m = close < 0 ? null : /^\[([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(line.slice(pos, close + 1));
+        if (!m || !MONTHS[m[2]]) return null;
+        date = m[3] + MONTHS[m[2]] + m[1];
+        pos = close + 1;
+        continue;
+      }
+      if (t.d === "tfmt") {
+        var raw = line.slice(pos, pos + t.width);
+        if (raw.length < t.width) return null;
+        var parts = {};
+        for (var q = 0; q < t.layout.length; q++) {
+          var piece = raw.substr(t.layout[q][1], t.layout[q][2]);
+          if (t.layout[q][0] === "b") { if (!MONTHS[piece]) return null; parts.m = MONTHS[piece]; }
+          else { if (!/^[0-9]+$/.test(piece)) return null; parts[t.layout[q][0]] = piece; }
+        }
+        if (t.layout.length) date = parts.Y + parts.m + parts.d;
+        pos += t.width;
+        continue;
+      }
+      var nx = toks[idx + 1], end;
+      if (!nx) end = line.length;
+      else if (nx.kind === "ws") { end = line.slice(pos).search(/[ \t]/); end = end < 0 ? line.length : pos + end; if (end === pos) return null; }
+      else { end = line.indexOf(nx.text, pos); if (end < 0) return null; }
+      var value = line.slice(pos, end);
+      pos = end;
+      if (t.d === "r") {
+        var rp = value.trim().split(/[ \t]+/);
+        if (rp.length < 2 || !/^[A-Z]+$/.test(rp[0])) return null;
+        method = rp[0]; path = rp[1];
+      } else if (t.d === "m") {
+        if (!/^[A-Z]+$/.test(value)) return null;
+        method = value;
+      } else if (t.d === "U") {
+        path = value;
+      } else if (t.d === "s") {
+        if (!/^[0-9]{3}$/.test(value)) return null;
+        status = +value;
+      }
+    }
+    if (method === null || path === null || date === null) return null;
+    return { method: method, path: path, status: status, date: date };
+  }
+
+  function sampleReply(p, error) {
+    if (!p) return reply({ ok: false, method: null, path: null, normalized: null, status: null, status_class: null, date: null, error: error || UNREADABLE });
+    return reply({ ok: true, method: p.method, path: p.path, normalized: normalizePath(p.path), status: p.status,
+      status_class: p.status === null ? "???" : String(p.status).charAt(0) + "xx", date: p.date, error: null });
+  }
+  function stripEol(line) { return String(line || "").replace(/\n$/, "").replace(/\r$/, ""); }
   function parseCustom(line, c) {
     var f = line.trim().split(/[ \t]+/);
     function at(n) { return n >= 1 && n <= f.length ? f[n - 1] : null; }
@@ -329,12 +485,15 @@
 
   function fakeCommand(sv, settings, window) {
     if (sv.log_format === "custom" && !sv.custom_format) return "설정 오류: 사용자 정의 형식이 없어요";
-    var glob = String(sv.log_glob || "");
-    var cut = glob.lastIndexOf("/");
-    var dir = cut > 0 ? glob.slice(0, cut) : "/";
+    var finds = (sv.log_globs || []).map(function (glob) {
+      glob = String(glob);
+      var cut = glob.lastIndexOf("/");
+      var dir = cut > 0 ? glob.slice(0, cut) : "/";
+      return "  find " + dir + " -maxdepth 1 -type f -name \"" + glob.slice(cut + 1) + "\" 2>/dev/null\n";
+    }).join("");
     var since = window === "all" ? "-" : daysBefore(TODAY, +window);
     var script = "set -u; tok=\"$0\"\n" +
-      "find " + dir + " -maxdepth 1 -type f -name \"" + glob.slice(cut + 1) + "\" 2>/dev/null | sort | while IFS= read -r f; do\n" +
+      "{\n" + finds + "} | LC_ALL=C sort -u | while IFS= read -r f; do\n" +
       "  printf \"\\n\\001F%s\\t%s\\n\" \"$tok\" \"$f\"\n" +
       "  case \"$f\" in *.gz) gzip -dc -- \"$f\" 2>/dev/null ;; *) cat -- \"$f\" 2>/dev/null ;; esac\n" +
       "done | LC_ALL=C awk -v since=" + since + " -v fmt=" + sv.log_format +
@@ -345,6 +504,7 @@
   // ------------------------------------------------------------ 비밀번호 (값은 어디에도 두지 않는다: 입력됐다는 표시만)
 
   var knownSecrets = { "napi@10.0.12.11:22": true, "napi@10.0.12.13:22": true };
+  var knownPassphrases = {}; // key_file → true
   function secretKey(user, host, port) { return user + "@" + host + ":" + port; }
 
   // ------------------------------------------------------------ 가짜 스캔
@@ -522,13 +682,26 @@
       configPath = "C:\\Users\\napi\\Desktop\\napi-config-team.yaml";
       return reply({ ok: true, path: configPath });
     },
-    test_log_line: function (fmt, custom, line) {
-      if (fmt === "custom" && !custom) return reply({ ok: false, error: "사용자 정의 형식이 올바르지 않아요" });
-      var text = String(line || "").replace(/\n$/, "").replace(/\r$/, "");
-      var p = fmt === "custom" ? parseCustom(text, custom) : parseClf(text);
-      if (!p) return reply({ ok: false, method: null, path: null, normalized: null, status: null, date: null, error: UNREADABLE });
-      return reply({ ok: true, method: p.method, path: p.path, normalized: normalizePath(p.path),
-        status: p.status, date: p.date, error: null });
+    test_log_line: function (fmt, custom, line, formats) {
+      if (fmt === "custom") {
+        if (!custom) return reply({ ok: false, error: "사용자 정의 형식이 올바르지 않아요" });
+        return sampleReply(parseCustom(stripEol(line), custom));
+      }
+      var pattern = BUILTIN_PATTERNS[fmt];
+      if (!pattern) {
+        var list = formats !== undefined && formats !== null ? formats : (config.log_formats || []);
+        var hit = list.filter(function (f) { return f.name === fmt; })[0];
+        if (!hit) return sampleReply(null, "모르는 로그 형식이에요: " + fmt);
+        pattern = hit.pattern;
+      }
+      var spec;
+      try { spec = mockCompile(String(pattern)); } catch (e) { return sampleReply(null, e.message); }
+      return sampleReply(mockParse(stripEol(line), spec));
+    },
+    test_format: function (pattern, line) {
+      var spec;
+      try { spec = mockCompile(String(pattern || "")); } catch (e) { return sampleReply(null, e.message); }
+      return sampleReply(mockParse(stripEol(line), spec));
     },
     preview_commands: function (name, window) {
       var svc = service(name);
@@ -554,7 +727,32 @@
       targets.forEach(function (k) { knownSecrets[k] = true; });
       return reply({ ok: true });
     },
-    set_passphrase: function () { return reply({ ok: true }); },
+    set_passphrase: function (keyFile) {
+      knownPassphrases[String(keyFile)] = true;
+      return reply({ ok: true });
+    },
+    secret_status: function (name) {
+      var svc = service(name);
+      if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + name });
+      var out = {};
+      svc.servers.forEach(function (sv) {
+        if (sv.auth === "key") out[sv.name] = sv.key_file && knownPassphrases[sv.key_file] ? "set" : "n/a";
+        else out[sv.name] = knownSecrets[secretKey(sv.user, sv.host, sv.port)] ? "set" : "missing";
+      });
+      return reply(out);
+    },
+    clear_secret: function (name, server) {
+      var svc = service(name);
+      if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + name });
+      var sv = svc.servers.filter(function (x) { return x.name === server; })[0];
+      if (!sv) return reply({ ok: false, error: "서버를 찾을 수 없어요: " + server });
+      if (sv.auth === "key") { if (sv.key_file) delete knownPassphrases[sv.key_file]; }
+      else delete knownSecrets[secretKey(sv.user, sv.host, sv.port)];
+      return reply({ ok: true });
+    },
+    pick_key_file: function () {
+      return reply({ ok: true, path: "C:\\Users\\napi\\.ssh\\id_rsa_napi" });
+    },
     start_scan: function (name, window) {
       if (["90", "180", "365", "all"].indexOf(String(window)) < 0) return reply({ ok: false, error: "분석 기간이 올바르지 않아요" });
       var svc = service(name);
