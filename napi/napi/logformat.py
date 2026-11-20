@@ -40,8 +40,13 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
 - t: 커서 위치 문자가 "["이어야 하고, 커서부터 처음 나오는 "]"까지(포함)가 값이다. "]"가 없으면 실패.
   값의 둘째 글자부터 ^[0-9][0-9]/[A-Za-z][A-Za-z][A-Za-z]/[0-9][0-9][0-9][0-9]로 시작해야 하고
   월 이름이 v1 월 맵(Jan..Dec, 대소문자 구분)에 있어야 한다. 날짜 = yyyy mm dd.
-- tfmt (%{...}t): 값의 바이트 길이가 time_width와 같아야 한다. time_layout이 비어 있지 않으면
+- tfmt (%{...}t): 구분자를 찾지 않는다. 커서부터 정확히 time_width 바이트가 값이고, 커서를
+  time_width 바이트만큼 옮긴다 (다음 토큰은 평소대로 그 위치에서 맞아야 한다). 남은 바이트가
+  time_width보다 적으면 실패. time_layout이 비어 있지 않으면
   (Y, m 또는 b, d가 모두 있는 형식) 항목을 차례로 (오프셋 0부터, 바이트 단위) 잘라 낸다.
+  (Python: 문자열로 다루므로 time_width가 UTF-8 글자 중간에서 끝나면 커서를 둘 곳이 없다.
+  그 tfmt가 last_essential이면 그대로 성공하고, 아니면 실패로 친다. awk에서도 다음 토큰
+  (lit/ws)은 continuation 바이트 위치에서 맞을 수 없으므로 결과가 같다.)
   Y, m, d는 ^[0-9]+$이어야 하고, b는 v1 월 맵에 있어야 한다(→ 두 자리 월). 날짜 = Y m d.
   time_layout이 비어 있으면 날짜를 정하지 않는다(폭만 검사).
 - r: 값의 앞뒤 space/tab을 지우고 [ \t]+로 나눈다. 토큰이 2개 이상이고 첫 토큰이 ^[A-Z]+$이어야 한다.
@@ -277,11 +282,23 @@ def _strip_eol(line: str) -> str:
     return line
 
 
-def _tfmt_date(value: str, tok: Token) -> str | None:
-    """tfmt 값 검사. 실패면 None, 날짜 없는 형식이면 "" , 아니면 YYYYMMDD."""
-    raw = value.encode("utf-8", "surrogateescape")
-    if len(raw) != tok.time_width:
+def _take_bytes(line: str, pos: int, width: int) -> tuple[bytes, int | None] | None:
+    """pos부터 UTF-8로 width바이트를 잘라 (바이트, 다음 글자 위치)를 돌려준다.
+    바이트가 모자라면 None. width가 글자 중간에서 끝나면 다음 위치는 None."""
+    chunk = line[pos:pos + width]  # 한 글자는 1바이트 이상이므로 width글자면 충분하다
+    raw = chunk.encode("utf-8", "surrogateescape")
+    if len(raw) < width:
         return None
+    used = 0
+    end = pos
+    while used < width:
+        used += len(line[end].encode("utf-8", "surrogateescape"))
+        end += 1
+    return raw[:width], (end if used == width else None)
+
+
+def _tfmt_date(raw: bytes, tok: Token) -> str | None:
+    """tfmt 값(time_width바이트) 검사. 실패면 None, 날짜 없는 형식이면 "" , 아니면 YYYYMMDD."""
     parts = {}
     for key, off, size in tok.time_layout:
         part = raw[off:off + size]
@@ -346,6 +363,22 @@ def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
                 return None
             pos = end + 1
             continue
+        if d == "tfmt":
+            taken = _take_bytes(line, pos, tok.time_width)
+            if taken is None:
+                return None
+            raw, end = taken
+            got = _tfmt_date(raw, tok)
+            if got is None:
+                return None
+            if got:
+                date = got
+            if end is None:  # 글자 중간에서 끝남: 뒤 토큰이 남아 있으면 맞을 수 없다
+                if idx == spec.last_essential:
+                    break
+                return None
+            pos = end
+            continue
         nxt = toks[idx + 1] if idx + 1 < len(toks) else None
         if nxt is None:
             end = len(line)
@@ -359,13 +392,7 @@ def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
                 return None
         value = line[pos:end]
         pos = end
-        if d == "tfmt":
-            got = _tfmt_date(value, tok)
-            if got is None:
-                return None
-            if got:
-                date = got
-        elif d == "r":
+        if d == "r":
             parts = _tokens(value)
             if len(parts) < 2 or not _METHOD_RE.fullmatch(parts[0]):
                 return None

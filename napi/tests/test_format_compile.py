@@ -335,3 +335,54 @@ def test_early_success_without_status_format():
     spec = compile_format('%t "%r" %{%H:%M}t')
     line = '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" bogus'
     assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", None, "20261118")
+
+
+# ---- 판정 R5: %{...}t는 커서부터 정확히 time_width 바이트를 먹는다 ----
+
+SPACE_TIME = "%{%Y-%m-%d %H:%M:%S}t"
+
+
+@pytest.mark.parametrize("line", [
+    '2026-11-18 10:00:01 1.1.1.1 "GET /a HTTP/1.1" 200',
+    '2026-11-18 10:00:01 \t 1.1.1.1 "GET /a HTTP/1.1" 200',
+])
+def test_space_containing_time_followed_by_ws(line):
+    spec = compile_format(SPACE_TIME + ' %h "%r" %s')
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", 200, "20261118")
+
+
+def test_space_containing_time_followed_by_exact_literal():
+    spec = compile_format("[" + SPACE_TIME + '] "%r" %s')
+    assert parse_with_spec('[2026-11-18 10:00:01] "GET /a HTTP/1.1" 200', spec) == \
+        ParsedLine("GET", "/a", 200, "20261118")
+    # 폭보다 짧은 값: 19바이트를 먹으면 "]"까지 들어가고 다음 리터럴 "]"가 맞지 않는다
+    assert parse_with_spec('[2026-11-18 10:00:1] "GET /a HTTP/1.1" 200', spec) is None
+    # 폭보다 긴 값
+    assert parse_with_spec('[2026-11-18 10:00:011] "GET /a HTTP/1.1" 200', spec) is None
+
+
+@pytest.mark.parametrize("pattern,line", [
+    (SPACE_TIME + ' "%r"', "2026-11-18 10:0"),                      # 줄이 폭보다 짧음
+    ('"%r" ' + SPACE_TIME, '"GET /a HTTP/1.1" 2026-11-18 10:00'),   # 마지막 필수 토큰이 짧음
+    ('"%r" ' + SPACE_TIME, '"GET /a HTTP/1.1" '),
+])
+def test_line_too_short_for_time_width_is_none(pattern, line):
+    assert parse_with_spec(line, compile_format(pattern)) is None
+
+
+def test_time_width_counts_utf8_bytes():
+    spec = compile_format('%{%Y년%m월%d일}t "%r"')
+    assert spec.tokens[0].time_width == 4 + 3 + 2 + 3 + 2 + 3
+    assert parse_with_spec('2026년11월18일 "GET /a HTTP/1.1"', spec) == \
+        ParsedLine("GET", "/a", None, "20261118")
+
+
+def test_time_width_ending_inside_a_character():
+    # 11바이트째가 "가"(3바이트)의 첫 바이트다. awk처럼 바이트로 자른다.
+    # 마지막 필수 토큰이면 그대로 성공 (레이아웃의 리터럴 X는 비교하지 않는다)
+    last = compile_format('"%r" %{%Y-%m-%dX}t')
+    assert parse_with_spec('"GET /a HTTP/1.1" 2026-11-18가', last) == \
+        ParsedLine("GET", "/a", None, "20261118")
+    # 뒤에 토큰이 남아 있으면 커서가 글자 중간이라 다음 토큰이 맞을 수 없다
+    first = compile_format('%{%Y-%m-%dX}t "%r"')
+    assert parse_with_spec('2026-11-18가 "GET /a HTTP/1.1"', first) is None
