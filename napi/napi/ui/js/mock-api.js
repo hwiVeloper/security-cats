@@ -353,6 +353,7 @@
         arg = pattern.slice(j + 1, k);
         j = k + 1;
       }
+      if (j >= n) throw new Error("패턴 끝의 % 를 해석할 수 없어요");
       var letter = pattern.charAt(j);
       var text = pattern.slice(i, j + 1);
       i = j + 1;
@@ -379,6 +380,8 @@
   }
 
   function timeToken(text, arg) {
+    if (/^(sec|msec|usec|msec_frac|usec_frac)$|^(begin|end):/.test(arg) || !/%[^%]/.test(arg.split("%%").join("")))
+      throw new Error("지원하지 않는 시각 형식이에요: %{" + arg + "}t");
     var layout = [], off = 0, i = 0;
     while (i < arg.length) {
       if (arg.charAt(i) !== "%") { off++; i++; continue; }

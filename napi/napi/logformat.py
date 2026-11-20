@@ -25,6 +25,9 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   field 두 개가 붙는 것을 막으므로 field 다음 토큰은 항상 lit 또는 ws이거나 없다.
   %r 바로 다음이 ws이면 컴파일 오류다 (요청 줄에는 공백이 있으므로 따옴표 등으로 감싸야 한다).
   %>s와 %<s는 %s와 같다. 짝 없는 서로게이트(U+D800..U+DFFF)가 든 패턴은 컴파일 오류다.
+  패턴이 지시자 문자 없이 끝나면("%", "%>", "%{...}") 컴파일 오류다.
+  %{...}t의 인자에 strftime 지시자(%% 제외)가 없거나, 인자가 sec/msec/usec/msec_frac/usec_frac
+  이거나 begin:/end:로 시작하면 컴파일 오류다 (Apache의 그 변형은 폭으로 읽을 수 없다).
 - 필수 토큰: 요청(r, m, U), 날짜(t, time_layout이 있는 tfmt), 상태(s).
   last_essential = 그중 마지막 토큰의 위치. 토큰을 앞에서부터 차례로 처리하다가 last_essential
   토큰을 처리하면 그 즉시 성공한다. 그 뒤 토큰은 보지 않는다(없거나 틀려도 된다).
@@ -170,6 +173,18 @@ _DIRECTIVES = frozenset("h l u t r m U q H s b B D T i o".split())
 # %{...}t 안에서 받는 strftime 지시자와 폭
 _TIME_WIDTHS = {"Y": 4, "m": 2, "d": 2, "H": 2, "M": 2, "S": 2, "b": 3, "z": 5, "y": 2}
 _TIME_DATE_KEYS = ("Y", "m", "d", "b")
+# Apache의 %{sec}t, %{msec_frac}t, %{begin:...}t 같은 변형은 strftime 폭으로 읽을 수 없다 (M3)
+_TIME_NAMED = frozenset(("sec", "msec", "usec", "msec_frac", "usec_frac"))
+_TIME_DIRECTIVE_RE = re.compile(r"%[^%]")
+_ERROR_TRAILING_PERCENT = "패턴 끝의 % 를 해석할 수 없어요"
+
+
+def _check_time_arg(arg: str) -> None:
+    """%{arg}t가 strftime 지시자로 된 형식인지 본다. 아니면 FormatError."""
+    plain = arg.replace("%%", "")
+    if (arg in _TIME_NAMED or arg.startswith(("begin:", "end:"))
+            or not _TIME_DIRECTIVE_RE.search(plain)):
+        raise FormatError(f"지원하지 않는 시각 형식이에요: %{{{arg}}}t")
 
 
 def _time_layout(arg: str) -> tuple[tuple[tuple[str, int, int], ...], int]:
@@ -235,7 +250,9 @@ def compile_format(pattern: str) -> FormatSpec:
                 raise FormatError("닫히지 않은 %{ 가 있어요")
             arg = pattern[j + 1:k]
             j = k + 1
-        letter = pattern[j] if j < n else ""  # 지시자 문자 없이 끝나면 알 수 없는 지시자(skip)
+        if j >= n:  # "%", "%>", "%{...}"로 끝남: 지시자 문자가 없다
+            raise FormatError(_ERROR_TRAILING_PERCENT)
+        letter = pattern[j]
         text = pattern[i:j + 1]
         i = j + 1
         if lit:
@@ -244,6 +261,7 @@ def compile_format(pattern: str) -> FormatSpec:
         elif tokens and tokens[-1].kind == "field":
             raise FormatError(f"필드 사이에 구분 문자가 필요해요: {tokens[-1].text}{text}")
         if letter == "t" and arg is not None:
+            _check_time_arg(arg)
             layout, width = _time_layout(arg)
             tokens.append(Token("field", text, "tfmt", layout, width))
         else:

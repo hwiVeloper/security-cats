@@ -555,3 +555,37 @@ def test_custom_clf_day_range(day, ok):
                      time_format="clf")
     p = parse_line(f"1.1.1.1 [{day}/Nov/2026:10:00:01 +0900] GET /a 200", "custom", c)
     assert (p is not None) == ok
+
+
+# ---- 최종 리뷰 M3: 지원하지 않는 %{...}t 변형과 끝의 % 는 컴파일 오류 ----
+
+@pytest.mark.parametrize("arg", [
+    "msec_frac", "usec_frac", "sec", "msec", "usec",
+    "begin:%Y-%m-%d", "end:%d/%b/%Y", "begin:", "end:x",
+    "Y-m-d", "", "%%", "abc %% def",
+])
+def test_unsupported_time_variants_are_format_error(arg):
+    pattern = '%t %{' + arg + '}t "%r" %s'
+    msg = "지원하지 않는 시각 형식이에요: %{" + arg + "}t"
+    with pytest.raises(FormatError) as e:
+        compile_format(pattern)
+    assert str(e.value) == msg
+    res = run_test_format(pattern, '[18/Nov/2026:10:00:01 +0900] x "GET /a b" 200')
+    assert res["ok"] is False and res["error"] == msg
+
+
+def test_supported_time_variants_still_compile():
+    assert compile_format('%t %{%H:%M:%S}t "%r"')  # 날짜 없는 시각도 폭 검사용으로 된다
+    assert compile_format('%{%Y-%m-%d}t "%r"')
+    assert compile_format('%{x%%%Y-%m-%d}t "%r"')
+
+
+@pytest.mark.parametrize("pattern", ['%t "%r" %s %', '%t "%r" %s %>', '%t "%r" %s x%'])
+def test_trailing_lone_percent_is_format_error(pattern):
+    with pytest.raises(FormatError, match="^패턴 끝의 % 를 해석할 수 없어요$"):
+        compile_format(pattern)
+
+
+def test_trailing_escaped_percent_is_ok():
+    spec = compile_format('%t "%r" %s 100%%')
+    assert spec.tokens[-1] == Token("lit", "100%")
