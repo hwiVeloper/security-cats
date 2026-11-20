@@ -2,6 +2,14 @@
  * window.pywebview.api에 실제 api.py와 같은 이름의 Promise 함수를 둔다.
  * 수치는 시안 v3를 그대로 쓴다: 161개 (깨어있음 128, 꾸벅꾸벅 14, 잠듦 9, 영면 3, 잠꼬대 2, 유령 5)
  * + 외부 탐색 시도 6개, WAS-03 로그 부족(신뢰도 low).
+ *
+ * 설정·스캔 (Task 13):
+ * - 비밀번호: 라운드페이 API의 WAS-02만 아직 입력되지 않은 상태로 시작한다.
+ * - 가짜 스캔: 명세 1.2초 → 서버 수집 (동시에 max_parallel_servers대).
+ *   서버 목록의 2번째 서버는 호스트 키 확인을 묻고 (수락하면 새로 고칠 때까지 다시 묻지 않는다),
+ *   3번째 서버는 "인증 실패"로 끝난다.
+ *   명세 출처가 "파일"인 서비스는 명세 단계에서 실패한다 (failed 화면 확인용).
+ * - save_config는 napi/config.py validate_config와 같은 문구로 검사한다.
  */
 (function (root) {
   "use strict";
@@ -242,6 +250,235 @@
   }
   function todayIso() { return TODAY.slice(0, 4) + "-" + TODAY.slice(4, 6) + "-" + TODAY.slice(6, 8); }
 
+  // ------------------------------------------------------------ 설정 (Task 13)
+
+  var configPath = "C:\\Users\\napi\\AppData\\Roaming\\napi\\napi-config.yaml";
+
+  function validate(cfg) {
+    var errors = [];
+    var seen = {};
+    (cfg.services || []).forEach(function (svc) {
+      var label = "서비스 '" + svc.name + "'";
+      if (!String(svc.name || "").trim()) errors.push("서비스 이름이 비어 있습니다.");
+      if (seen[svc.name]) errors.push(label + ": 서비스 이름이 중복되었습니다.");
+      seen[svc.name] = true;
+      (svc.servers || []).forEach(function (sv) {
+        var sl = label + " / 서버 '" + sv.name + "'";
+        var glob = String(sv.log_glob || "");
+        if (!String(sv.host || "").trim()) errors.push(sl + ": 호스트가 비어 있습니다.");
+        if (sv.auth === "key" && !sv.key_file) errors.push(sl + ": 키 인증인데 키 파일이 지정되지 않았습니다.");
+        if (sv.log_format === "custom" && !sv.custom_format) errors.push(sl + ": 로그 형식이 custom인데 사용자 정의 형식이 없습니다.");
+        if (glob.charAt(0) !== "/") errors.push(sl + ": 로그 경로는 '/'로 시작해야 합니다.");
+        else if (glob.slice(0, glob.lastIndexOf("/")).indexOf("*") >= 0) errors.push(sl + ": 로그 경로의 디렉터리 부분에는 '*'를 쓸 수 없습니다.");
+      });
+    });
+    return errors;
+  }
+
+  // ------------------------------------------------------------ 형식 테스트 (logformat.py의 간이판)
+
+  var MONTHS = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+    Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
+  var UNREADABLE = "이 형식으로 읽을 수 없는 줄이에요";
+
+  function utf8Len(s) { return new TextEncoder().encode(s).length; }
+  function isVariable(seg) {
+    return /^[0-9]+$/.test(seg) ||
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(seg) ||
+      /^[0-9a-fA-F]{16,}$/.test(seg) || /^[0-9][0-9-]{5,}$/.test(seg) || seg.indexOf("@") >= 0 ||
+      (seg.indexOf("%") >= 0 && utf8Len(seg) >= 20) ||
+      (/^[A-Za-z0-9_-]{20,}$/.test(seg) && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg));
+  }
+  function normalizePath(path) {
+    var segs = [];
+    String(path).replace(/[?#].*$/, "").split("/").forEach(function (seg) {
+      seg = seg.split(";")[0];
+      if (seg) segs.push(isVariable(seg) ? "{*}" : seg);
+    });
+    return "/" + segs.join("/");
+  }
+  function parseClf(line) {
+    var t = /\[([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(line);
+    var q = /"([^"]*)"[ \t]+([0-9]{3})(?:[ \t]|$)/.exec(line);
+    if (!t || !q || !MONTHS[t[2]]) return null;
+    var tok = q[1].trim().split(/[ \t]+/);
+    if (tok.length < 2 || !/^[A-Z]+$/.test(tok[0])) return null;
+    return { method: tok[0], path: tok[1], status: +q[2], date: t[3] + MONTHS[t[2]] + t[1] };
+  }
+  function parseCustom(line, c) {
+    var f = line.trim().split(/[ \t]+/);
+    function at(n) { return n >= 1 && n <= f.length ? f[n - 1] : null; }
+    var m = at(c.method_field), p = at(c.path_field), st = at(c.status_field), tm = at(c.time_field);
+    if (!m || !p || !st || !tm || !/^[A-Z]+$/.test(m) || !/^[0-9]{3}$/.test(st)) return null;
+    p = p.replace(/^"/, "").replace(/"$/, "");
+    if (!p) return null;
+    var d;
+    if (c.time_format === "iso8601") {
+      var iso = /^([0-9]{4})-([0-9]{2})-([0-9]{2})/.exec(tm);
+      if (!iso) return null;
+      d = iso[1] + iso[2] + iso[3];
+    } else {
+      var clf = /([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4})/.exec(tm);
+      if (!clf || !MONTHS[clf[2]]) return null;
+      d = clf[3] + MONTHS[clf[2]] + clf[1];
+    }
+    return { method: m, path: p, status: +st, date: d };
+  }
+
+  // ------------------------------------------------------------ 명령 미리보기 (모양만 흉내 낸다)
+
+  function fakeCommand(sv, settings, window) {
+    if (sv.log_format === "custom" && !sv.custom_format) return "설정 오류: 사용자 정의 형식이 없어요";
+    var glob = String(sv.log_glob || "");
+    var cut = glob.lastIndexOf("/");
+    var dir = cut > 0 ? glob.slice(0, cut) : "/";
+    var since = window === "all" ? "-" : daysBefore(TODAY, +window);
+    var script = "set -u; tok=\"$0\"\n" +
+      "find " + dir + " -maxdepth 1 -type f -name \"" + glob.slice(cut + 1) + "\" 2>/dev/null | sort | while IFS= read -r f; do\n" +
+      "  printf \"\\n\\001F%s\\t%s\\n\" \"$tok\" \"$f\"\n" +
+      "  case \"$f\" in *.gz) gzip -dc -- \"$f\" 2>/dev/null ;; *) cat -- \"$f\" 2>/dev/null ;; esac\n" +
+      "done | LC_ALL=C awk -v since=" + since + " -v fmt=" + sv.log_format +
+      " -v max_rows=" + settings.max_rows + " -v top404=" + settings.top_404 + " \"<집계 awk 프로그램 (미리보기에서는 생략)>\"";
+    return "timeout " + settings.remote_timeout_sec + " nice -n 19 ionice -c3 sh -c '" + script + "' napi-scan-00000000";
+  }
+
+  // ------------------------------------------------------------ 비밀번호 (값은 어디에도 두지 않는다: 입력됐다는 표시만)
+
+  var knownSecrets = { "napi@10.0.12.11:22": true, "napi@10.0.12.13:22": true };
+  function secretKey(user, host, port) { return user + "@" + host + ":" + port; }
+
+  // ------------------------------------------------------------ 가짜 스캔
+
+  var scans = {};
+  var activeScan = {};
+  var scanSeq = 0;
+  var knownHosts = {}; // 수락한 호스트 키 (known_hosts 흉내): 다음 스캔에서는 묻지 않는다
+
+  function fakeFingerprint(host) {
+    var abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var h = 7, out = "";
+    for (var i = 0; i < host.length; i++) h = (Math.imul(h, 31) + host.charCodeAt(i)) | 0;
+    for (var j = 0; j < 43; j++) { h = (Math.imul(h, 1103515245) + 12345) | 0; out += abc.charAt((h >>> 8) & 63); }
+    return "SHA256:" + out;
+  }
+
+  function later(scan, ms, fn) {
+    var t = setTimeout(function () {
+      var i = scan.timers.indexOf(t);
+      if (i >= 0) scan.timers.splice(i, 1);
+      if (!scan.stopped) fn();
+    }, ms);
+    scan.timers.push(t);
+  }
+
+  function nowIso() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" +
+      p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  function finishScan(scan, phase, error) {
+    scan.stopped = true;
+    scan.timers.forEach(clearTimeout);
+    scan.timers = [];
+    scan.prompts = [];
+    scan.phase = phase;
+    scan.error = error || null;
+    if (activeScan[scan.service] === scan.id) delete activeScan[scan.service];
+  }
+
+  function saveFakeResult(scan, svc) {
+    if (!service(svc.name)) return; // 스캔 중에 설정에서 지워진 서비스
+    var r = results[svc.name];
+    if (!r) {
+      r = results[svc.name] = {
+        service: svc.name, scanned_at: "", window: scan.window, since: null, until: TODAY,
+        spec_location: svc.spec.location, summary: "", apis: buildApis(), counts: {}, sleeping: 0,
+        sleeping_noted: 0, reliability: { level: "ok", coverage_days: 364, reasons: [] }, servers: [],
+        probe_rest: { distinct: 0, count: 0 }
+      };
+    }
+    var reasons = [];
+    r.servers = svc.servers.map(function (sv) {
+      var o = scan.outcomes[sv.name] || { ok: false, error: "취소됨", elapsed: 0 };
+      if (!o.ok) reasons.push(sv.name + "에서 로그를 가져오지 못했어요 (" + o.error + ")");
+      return { name: sv.name, ok: o.ok, error: o.ok ? null : o.error, oldest: o.ok ? daysBefore(TODAY, 364) : null,
+        newest: o.ok ? TODAY : null, elapsed_sec: o.elapsed, truncated: false };
+    });
+    r.scanned_at = nowIso();
+    r.window = scan.window;
+    r.since = scan.window === "all" ? null : daysBefore(TODAY, +scan.window);
+    r.spec_location = svc.spec.location;
+    r.reliability = { level: reasons.length ? "low" : "ok", coverage_days: 364, reasons: reasons };
+    refresh(svc.name);
+  }
+
+  function startFakeScan(svc, window) {
+    var scan = { id: "mock-scan-" + (++scanSeq), service: svc.name, window: window, phase: "spec", servers: {},
+      prompts: [], error: null, timers: [], stopped: false, outcomes: {} };
+    svc.servers.forEach(function (sv) { scan.servers[sv.name] = "waiting"; });
+    scans[scan.id] = scan;
+    activeScan[svc.name] = scan.id;
+
+    var queue = svc.servers.map(function (sv, i) {
+      return { sv: sv, role: i === 1 ? "hostkey" : i === 2 ? "authfail" : "ok" };
+    });
+    var running = 0;
+
+    function end(job, ok, error, t0) {
+      scan.servers[job.sv.name] = ok ? "done" : "failed";
+      scan.outcomes[job.sv.name] = { ok: ok, error: error, elapsed: Math.round((Date.now() - t0) / 100) / 10 };
+      running -= 1;
+      next();
+    }
+    function aggregate(job, t0) {
+      scan.servers[job.sv.name] = "aggregating";
+      later(scan, 3500, function () { end(job, true, null, t0); });
+    }
+    function run(job) {
+      var t0 = Date.now();
+      running += 1;
+      scan.servers[job.sv.name] = "connecting";
+      if (job.role === "authfail") {
+        later(scan, 1500, function () { end(job, false, "인증 실패", t0); });
+      } else if (job.role === "hostkey" && !knownHosts[job.sv.host + ":" + job.sv.port]) {
+        later(scan, 700, function () {
+          scan.prompts.push({ prompt_id: scan.id + "-" + job.sv.name, host: job.sv.host, port: job.sv.port,
+            key_type: "ssh-ed25519", fingerprint: fakeFingerprint(job.sv.host),
+            answer: function (accept) {
+              if (accept) {
+                knownHosts[job.sv.host + ":" + job.sv.port] = true;
+                later(scan, 300, function () { aggregate(job, t0); });
+              }
+              else end(job, false, "호스트 키를 확인하지 않아 접속하지 않았어요", t0);
+            } });
+        });
+      } else {
+        later(scan, 1000, function () { aggregate(job, t0); });
+      }
+    }
+    function next() {
+      if (scan.stopped) return;
+      var limit = Math.max(1, +config.settings.max_parallel_servers || 2);
+      while (running < limit && queue.length) run(queue.shift());
+      if (!running && !queue.length) {
+        saveFakeResult(scan, svc);
+        finishScan(scan, "done");
+      }
+    }
+
+    later(scan, 1200, function () {
+      if (svc.spec.source === "file") {
+        finishScan(scan, "failed", "명세 파일을 찾을 수 없어요: " + svc.spec.location);
+        return;
+      }
+      scan.phase = "collect";
+      next();
+    });
+    return scan;
+  }
+
   var mockApi = {
     get_state: function () {
       var out = {};
@@ -249,7 +486,7 @@
         var r = results[s.name];
         out[s.name] = r ? { sleeping: r.sleeping, scanned_at: r.scanned_at } : null;
       });
-      return reply({ config: config, config_path: "C:\\Users\\napi\\AppData\\Roaming\\napi\\napi-config.yaml", results: out, error: null });
+      return reply({ config: config, config_path: configPath, results: out, error: null });
     },
     get_result: function (name) { return reply(results[name] || null); },
     save_note: function (name, opKey, reason, author) {
@@ -272,6 +509,88 @@
       if (kind !== "html" && kind !== "pdf") return reply({ ok: false, error: "내보내기 형식이 올바르지 않아요" });
       if (!results[name]) return reply({ ok: false, error: "아직 스캔 결과가 없어요" });
       return reply({ ok: true, path: "C:\\Users\\napi\\Downloads\\napi_" + name + "_20261119." + kind });
+    },
+    save_config: function (cfg) {
+      var errors = validate(cfg);
+      if (errors.length) return reply({ ok: false, errors: errors });
+      config = clone(cfg);
+      config.services.forEach(function (s) { if (results[s.name]) refresh(s.name); });
+      return reply({ ok: true, errors: [] });
+    },
+    open_config_dialog: function () {
+      configPath = "C:\\Users\\napi\\Desktop\\napi-config-team.yaml";
+      return reply({ ok: true, path: configPath });
+    },
+    test_log_line: function (fmt, custom, line) {
+      if (fmt === "custom" && !custom) return reply({ ok: false, error: "사용자 정의 형식이 올바르지 않아요" });
+      var text = String(line || "").replace(/\n$/, "").replace(/\r$/, "");
+      var p = fmt === "custom" ? parseCustom(text, custom) : parseClf(text);
+      if (!p) return reply({ ok: false, method: null, path: null, normalized: null, status: null, date: null, error: UNREADABLE });
+      return reply({ ok: true, method: p.method, path: p.path, normalized: normalizePath(p.path),
+        status: p.status, date: p.date, error: null });
+    },
+    preview_commands: function (name, window) {
+      var svc = service(name);
+      if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + name });
+      var out = {};
+      svc.servers.forEach(function (sv) { out[sv.name] = fakeCommand(sv, config.settings, String(window)); });
+      return reply(out);
+    },
+    missing_secrets: function (name) {
+      var svc = service(name);
+      if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + name });
+      return reply(svc.servers.filter(function (sv) {
+        return sv.auth === "password" && !knownSecrets[secretKey(sv.user, sv.host, sv.port)];
+      }).map(function (sv) { return { server: sv.name, user: sv.user, host: sv.host, port: sv.port, auth: sv.auth }; }));
+    },
+    set_password: function (user, host, port, password, applyTo) {
+      var targets = [secretKey(user, host, +port)];
+      if (applyTo) {
+        var svc = service(applyTo);
+        if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + applyTo });
+        svc.servers.forEach(function (sv) { if (sv.auth === "password") targets.push(secretKey(sv.user, sv.host, sv.port)); });
+      }
+      targets.forEach(function (k) { knownSecrets[k] = true; });
+      return reply({ ok: true });
+    },
+    set_passphrase: function () { return reply({ ok: true }); },
+    start_scan: function (name, window) {
+      if (["90", "180", "365", "all"].indexOf(String(window)) < 0) return reply({ ok: false, error: "분석 기간이 올바르지 않아요" });
+      var svc = service(name);
+      if (!svc) return reply({ ok: false, error: "서비스를 찾을 수 없어요: " + name });
+      if (activeScan[name]) return reply({ ok: false, error: "이미 스캔 중이에요" });
+      return reply({ scan_id: startFakeScan(clone(svc), String(window)).id });
+    },
+    get_scan_progress: function (id) {
+      var scan = scans[id];
+      if (!scan) return reply({ ok: false, error: "스캔을 찾을 수 없어요" });
+      var p = scan.prompts[0];
+      return reply({ phase: scan.phase, servers: scan.servers, error: scan.error,
+        hostkey_pending: p ? { prompt_id: p.prompt_id, host: p.host, port: p.port, key_type: p.key_type,
+          fingerprint: p.fingerprint } : null });
+    },
+    answer_hostkey: function (id, accept, promptId) {
+      var scan = scans[id];
+      if (!scan) return reply({ ok: false, error: "스캔을 찾을 수 없어요" });
+      var p = scan.prompts.filter(function (x) { return promptId == null || x.prompt_id === promptId; })[0];
+      if (!p) return reply({ ok: false, error: "확인할 호스트 키가 없어요" });
+      scan.prompts.splice(scan.prompts.indexOf(p), 1);
+      p.answer(!!accept);
+      return reply({ ok: true });
+    },
+    cancel_scan: function (id) {
+      var scan = scans[id];
+      if (!scan) return reply({ ok: false, error: "스캔을 찾을 수 없어요" });
+      scan.prompts = [];
+      // 실제 백엔드처럼 바로 끝나지 않고 잠시 뒤에 멈춘다 (진행 중이던 서버는 "cancelled").
+      setTimeout(function () {
+        if (scan.stopped) return;
+        Object.keys(scan.servers).forEach(function (k) {
+          if (scan.servers[k] !== "done" && scan.servers[k] !== "failed") scan.servers[k] = "cancelled";
+        });
+        finishScan(scan, "cancelled");
+      }, 600);
+      return reply({ ok: true });
     }
   };
 

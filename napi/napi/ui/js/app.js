@@ -1,6 +1,7 @@
 /* 메인 화면: 사이드바(서비스 목록), 냅냥 요약, 상태 탭, 표, 상세·메모 패널. 전역 NapiApp.
  * window.pywebview.api.* 만 쓴다 (?mock=1이면 mock-api.js가 같은 이름으로 대신한다).
- * onScan / onExport / onAddService / onSettings는 Task 13이 바꿔 끼우는 자리다.
+ * onScan → scan.js(NapiScan), onAddService / onSettings → settings.js(NapiSettings).
+ * openModal은 두 화면이 함께 쓰는 대화상자다.
  */
 (function (root) {
   "use strict";
@@ -287,22 +288,95 @@
     markSelected();
   }
 
-  // ------------------------------------------------------------ hooks (Task 13이 바꾼다)
+  // ------------------------------------------------------------ modal
+
+  // 화면 위에 뜨는 대화상자. 여러 개가 겹칠 수 있고, 맨 위 것만 키보드를 받는다.
+  // opts: { title, body, foot, wide, cls, initialFocus, onDismiss }
+  //   onDismiss: ✕ 또는 Esc로 닫을 때 불린다. false를 돌려주면 닫지 않는다 (직접 close한 경우 등).
+  var modals = [];
+  var modalSeq = 0;
+
+  // inert는 포커스와 접근성 트리에서 함께 빠진다 (aria-hidden은 건드리지 않는다: 상세 패널이 따로 쓴다).
+  function setInert(node, on) {
+    if (node) node.inert = on;
+  }
+
+  function focusables(box) {
+    var list = box.querySelectorAll("button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])");
+    return Array.prototype.filter.call(list, function (n) { return !n.disabled && n.offsetParent !== null; });
+  }
+
+  function openModal(opts) {
+    var prevFocus = doc.activeElement;
+    var titleId = "modal-title-" + (++modalSeq);
+    var closed = false;
+    var handle = {};
+    var box = el("div", { class: "modal" + (opts.wide ? " wide" : "") + (opts.cls ? " " + opts.cls : ""), role: "dialog", "aria-modal": "true",
+      "aria-labelledby": titleId, tabindex: "-1" },
+      el("div", { class: "modal-head" },
+        el("h3", { id: titleId }, opts.title),
+        el("button", { type: "button", class: "modal-x", "aria-label": "닫기", title: "닫기", onclick: dismiss }, "✕")),
+      el("div", { class: "modal-body" }, opts.body),
+      opts.foot ? el("div", { class: "modal-foot" }, opts.foot) : null);
+    var back = el("div", { class: "modal-back" }, box);
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(); return; }
+      if (e.key !== "Tab") return;
+      var f = focusables(box);
+      if (!f.length) { e.preventDefault(); return; }
+      var first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && doc.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && doc.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+
+    if (modals.length) setInert(modals[modals.length - 1].back, true);
+    else { setInert($("app"), true); setInert($("detail"), true); }
+    doc.body.appendChild(back);
+    modals.push(handle);
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      var i = modals.indexOf(handle);
+      if (i >= 0) modals.splice(i, 1);
+      if (back.parentNode) back.parentNode.removeChild(back);
+      if (modals.length) setInert(modals[modals.length - 1].back, false);
+      else { setInert($("app"), false); setInert($("detail"), false); }
+      if (prevFocus && prevFocus.focus && doc.contains(prevFocus)) prevFocus.focus();
+    }
+    function dismiss() {
+      if (closed) return;
+      if (opts.onDismiss && opts.onDismiss() === false) return;
+      close();
+    }
+    handle.back = back;
+    handle.box = box;
+    handle.close = close;
+    handle.dismiss = dismiss;
+    handle.isOpen = function () { return !closed; };
+    (opts.initialFocus || focusables(box)[0] || box).focus();
+    return handle;
+  }
+
+  // ------------------------------------------------------------ hooks
 
   var NapiApp = {
     state: state,
     refresh: refresh,
     toast: toast,
+    isError: isError,
     selectService: selectService,
-    onScan: function (service, window) { toast("스캔 화면은 곧 연결돼요"); },
+    openModal: openModal,
+    hasModal: function () { return modals.length > 0; },
+    onScan: function (service, window) { return root.NapiScan.run(service, window); },
     onExport: function (service, kind) {
       return api.export(service, kind).then(function (res) {
         if (isError(res)) toast(res.error);
         else if (res && res.ok) toast("저장했어요: " + res.path);
       });
     },
-    onAddService: function () { toast("설정 화면은 곧 연결돼요"); },
-    onSettings: function () { toast("설정 화면은 곧 연결돼요"); }
+    onAddService: function () { root.NapiSettings.open({ add: true }); },
+    onSettings: function () { root.NapiSettings.open({}); }
   };
   root.NapiApp = NapiApp;
 
@@ -316,7 +390,7 @@
     $("add-service").addEventListener("click", function () { NapiApp.onAddService(); });
     $("open-settings").addEventListener("click", function () { NapiApp.onSettings(); });
     $("backdrop").addEventListener("click", closeDetail);
-    doc.addEventListener("keydown", function (e) { if (e.key === "Escape" && state.detailKey) closeDetail(); });
+    doc.addEventListener("keydown", function (e) { if (e.key === "Escape" && state.detailKey && !modals.length) closeDetail(); });
     refresh().catch(function () { toast("화면을 불러오지 못했어요"); });
   }
 
