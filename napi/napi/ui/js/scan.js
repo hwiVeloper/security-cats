@@ -95,140 +95,139 @@
 
   // ------------------------------------------------------------ 비밀번호 / 키파일 암호 모달
 
-  // entries: [{server, user, host, port}] → Promise<boolean> (true면 모두 입력됨)
-  function askPasswords(service, entries) {
+  // 비밀번호·키파일 암호 공용 입력 모달 → Promise<boolean> (true면 모두 전달됨).
+  // opts: { title, notice, okLabel, emptyMsg, failMsg, rows: [labelNode...], extra(rowNodes) → node, plan }
+  //   plan() → { idx: [보낼 입력 번호], send: function (i, value) → Promise<res> } (제출 순간에 한 번 부른다)
+  // 전달 중(busy)에는 취소·✕·Esc가 아무것도 하지 않는다. 값은 제출 순간 지역 배열로 옮겨 두고,
+  // 전달 중에는 DOM 입력을 다시 읽지 않는다. 끝나면 (성공·취소) 입력란을 비운다.
+  function askSecrets(opts) {
     return new Promise(function (resolve) {
+      var seq = ++formSeq;
       var inputs = [];
-      var rows = [];
-      var same = null;
+      var busyNow = false;
+      var done = false;
       var msg = el("p", { class: "form-msg", role: "alert" });
-      entries.forEach(function (e, i) {
-        var id = "napi-pw-" + i;
+      var rows = opts.rows.map(function (label, i) {
+        var id = "napi-secret-" + seq + "-" + i;
         var inp = el("input", { id: id, class: "inp", type: "password", autocomplete: "off", spellcheck: "false" });
         inputs.push(inp);
-        var lbl = el("label", { for: id }, e.server, el("small", { class: "muted" }, "  " + e.user + "@" + e.host + ":" + e.port));
-        rows.push(el("div", { class: "pw-row" }, lbl, inp));
+        return el("div", { class: "pw-row" }, el("label", { for: id }, label), inp);
       });
-      if (entries.length > 1) {
-        same = el("input", { type: "checkbox", id: "napi-pw-same" });
-        same.addEventListener("change", function () {
-          for (var i = 1; i < rows.length; i++) rows[i].hidden = same.checked;
-        });
-      }
       // 버튼은 모달 아래쪽(form 밖)에 있으므로 form 속성으로 묶는다 (Enter 제출도 된다).
-      var formId = "napi-pw-form-" + (++formSeq);
-      var ok = el("button", { type: "submit", class: "btn pri", form: formId }, "스캔 시작");
+      var formId = "napi-secret-form-" + seq;
+      var ok = el("button", { type: "submit", class: "btn pri", form: formId }, opts.okLabel);
       var cancel = el("button", { type: "button", class: "btn" }, "취소");
       var form = el("form", { id: formId, autocomplete: "off" },
-        el("p", { class: "notice" }, PW_NOTICE),
-        same ? el("label", { class: "check", for: "napi-pw-same" }, same, SAME_PW) : null,
-        rows);
+        el("p", { class: "notice" }, opts.notice), opts.extra ? opts.extra(rows) : null, rows);
       var handle;
 
-      function wipe() {
+      function finish(result) {
+        if (done) return;
+        done = true;
         inputs.forEach(function (inp) { inp.value = ""; });
         inputs = [];
-      }
-      function finish(result) {
-        wipe();
         handle.close();
         resolve(result);
       }
       function busy(on) {
+        busyNow = on;
         ok.disabled = on;
         cancel.disabled = on;
-        inputs.forEach(function (inp) { inp.disabled = on; });
+        var x = handle && handle.box.querySelector(".modal-x");
+        if (x) x.disabled = on;
+        form.querySelectorAll("input").forEach(function (inp) { inp.disabled = on; });
+      }
+      function dismiss() {
+        if (busyNow) return; // 전달 중에는 닫지 않는다
+        finish(false);
       }
 
       form.addEventListener("submit", function (ev) {
         ev.preventDefault();
-        var useSame = !!(same && same.checked);
-        var idx = useSame ? [0] : entries.map(function (_, i) { return i; });
-        for (var k = 0; k < idx.length; k++) {
-          if (!inputs[idx[k]].value) {
-            msg.textContent = "비밀번호를 입력해 주세요";
-            inputs[idx[k]].focus();
+        if (busyNow || done) return;
+        var plan = opts.plan();
+        for (var k = 0; k < plan.idx.length; k++) {
+          if (!inputs[plan.idx[k]].value) {
+            msg.textContent = opts.emptyMsg;
+            inputs[plan.idx[k]].focus();
             return;
           }
         }
+        var values = plan.idx.map(function (i) { return inputs[i].value; });
         msg.textContent = "";
         busy(true);
         var chain = Promise.resolve(null);
-        idx.forEach(function (i) {
+        plan.idx.forEach(function (i, k) {
           chain = chain.then(function (prevErr) {
             if (prevErr) return prevErr;
-            var e = entries[i];
-            return api().set_password(e.user, e.host, e.port, inputs[i].value, useSame ? service : null)
-              .then(function (res) { return isErr(res) ? res.error : null; });
+            return plan.send(i, values[k]).then(function (res) { return isErr(res) ? res.error : null; });
           });
         });
         chain.then(function (err) {
-          if (err) { busy(false); msg.textContent = err; return; }
+          values = null;
+          busy(false);
+          if (err) { msg.textContent = err; return; }
           finish(true);
         }, function () {
+          values = null;
           busy(false);
-          msg.textContent = "비밀번호를 전달하지 못했어요";
+          msg.textContent = opts.failMsg;
         });
       });
-      cancel.addEventListener("click", function () { finish(false); });
+      cancel.addEventListener("click", dismiss);
 
       handle = app().openModal({
-        title: service + " — 비밀번호 입력",
-        body: form,
-        foot: [msg, cancel, ok],
-        initialFocus: inputs[0],
-        onDismiss: function () { finish(false); return false; }
+        title: opts.title, body: form, foot: [msg, cancel, ok], initialFocus: inputs[0],
+        onDismiss: function () { dismiss(); return false; }
       });
+    });
+  }
+
+  // entries: [{server, user, host, port}] → Promise<boolean>
+  function askPasswords(service, entries) {
+    var same = null;
+    function extra(rows) {
+      var sameId = "napi-pw-same-" + (++formSeq);
+      same = el("input", { type: "checkbox", id: sameId });
+      same.addEventListener("change", function () {
+        for (var i = 1; i < rows.length; i++) rows[i].hidden = same.checked;
+      });
+      return el("label", { class: "check", for: sameId }, same, SAME_PW);
+    }
+    return askSecrets({
+      title: service + " — 비밀번호 입력", notice: PW_NOTICE, okLabel: "스캔 시작",
+      extra: entries.length > 1 ? extra : null,
+      emptyMsg: "비밀번호를 입력해 주세요", failMsg: "비밀번호를 전달하지 못했어요",
+      rows: entries.map(function (e) {
+        return [e.server, el("small", { class: "muted" }, "  " + e.user + "@" + e.host + ":" + e.port)];
+      }),
+      plan: function () {
+        var useSame = !!(same && same.checked);
+        return {
+          idx: useSame ? [0] : entries.map(function (_, i) { return i; }),
+          send: function (i, value) {
+            var e = entries[i];
+            return api().set_password(e.user, e.host, e.port, value, useSame ? service : null);
+          }
+        };
+      }
     });
   }
 
   // entries: [{server, key_file}] → Promise<boolean>
   function askPassphrases(service, entries) {
-    return new Promise(function (resolve) {
-      var inputs = [];
-      var msg = el("p", { class: "form-msg", role: "alert" });
-      var rows = entries.map(function (e, i) {
-        var id = "napi-pp-" + i;
-        var inp = el("input", { id: id, class: "inp", type: "password", autocomplete: "off", spellcheck: "false" });
-        inputs.push(inp);
-        return el("div", { class: "pw-row" },
-          el("label", { for: id }, e.server + " 키파일 암호", el("small", { class: "muted mono" }, "  " + e.key_file)), inp);
-      });
-      var formId = "napi-pp-form-" + (++formSeq);
-      var ok = el("button", { type: "submit", class: "btn pri", form: formId }, "다시 스캔");
-      var cancel = el("button", { type: "button", class: "btn" }, "취소");
-      var form = el("form", { id: formId, autocomplete: "off" }, el("p", { class: "notice" }, PP_NOTICE), rows);
-      var handle;
-      function finish(result) {
-        inputs.forEach(function (inp) { inp.value = ""; });
-        inputs = [];
-        handle.close();
-        resolve(result);
+    return askSecrets({
+      title: service + " — 키파일 암호 입력", notice: PP_NOTICE, okLabel: "다시 스캔",
+      emptyMsg: "키파일 암호를 입력해 주세요", failMsg: "키파일 암호를 전달하지 못했어요",
+      rows: entries.map(function (e) {
+        return [e.server + " 키파일 암호", el("small", { class: "muted mono" }, "  " + e.key_file)];
+      }),
+      plan: function () {
+        return {
+          idx: entries.map(function (_, i) { return i; }),
+          send: function (i, value) { return api().set_passphrase(entries[i].key_file, value); }
+        };
       }
-      form.addEventListener("submit", function (ev) {
-        ev.preventDefault();
-        for (var i = 0; i < inputs.length; i++) {
-          if (!inputs[i].value) { msg.textContent = "키파일 암호를 입력해 주세요"; inputs[i].focus(); return; }
-        }
-        ok.disabled = true;
-        var chain = Promise.resolve(null);
-        entries.forEach(function (e, i) {
-          chain = chain.then(function (prevErr) {
-            if (prevErr) return prevErr;
-            return api().set_passphrase(e.key_file, inputs[i].value)
-              .then(function (res) { return isErr(res) ? res.error : null; });
-          });
-        });
-        chain.then(function (err) {
-          if (err) { ok.disabled = false; msg.textContent = err; return; }
-          finish(true);
-        }, function () { ok.disabled = false; msg.textContent = "키파일 암호를 전달하지 못했어요"; });
-      });
-      cancel.addEventListener("click", function () { finish(false); });
-      handle = app().openModal({
-        title: service + " — 키파일 암호 입력", body: form, foot: [msg, cancel, ok],
-        initialFocus: inputs[0], onDismiss: function () { finish(false); return false; }
-      });
     });
   }
 
