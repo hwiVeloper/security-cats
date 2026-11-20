@@ -386,3 +386,68 @@ def test_time_width_ending_inside_a_character():
     # 뒤에 토큰이 남아 있으면 커서가 글자 중간이라 다음 토큰이 맞을 수 없다
     first = compile_format('%{%Y-%m-%dX}t "%r"')
     assert parse_with_spec('2026-11-18가 "GET /a HTTP/1.1"', first) is None
+
+
+# ---- 판정 R6 ----
+
+@pytest.mark.parametrize("pattern", [
+    '%t "%r" \ud800',
+    '%t "%r" %{\udfff}i',
+    '%{%Y-%m-%d\udc80}t "%r"',   # surrogateescape 범위도 형식에는 쓸 수 없다
+])
+def test_lone_surrogate_in_pattern_is_format_error(pattern):
+    with pytest.raises(FormatError, match="^형식에 쓸 수 없는 문자가 있어요$"):
+        compile_format(pattern)
+    res = run_test_format(pattern, '[18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1"')
+    assert res["ok"] is False and res["error"] == "형식에 쓸 수 없는 문자가 있어요"
+
+
+@pytest.mark.parametrize("line", [
+    '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a\ud800 HTTP/1.1" 200 1',
+    '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 200 1 \udfff',
+])
+def test_lone_surrogate_in_line_is_none(line):
+    assert parse_line(line, "webtob") is None
+    assert parse_with_spec(line, compile_format(BUILTIN_FORMATS["webtob"])) is None
+    custom = CustomFormat(method_field=6, path_field=7, status_field=9, time_field=4,
+                          time_format="clf")
+    assert parse_line(line, "custom", custom) is None
+    res = run_sample_line(line, "webtob", None)
+    assert res["ok"] is False and res["error"] == "이 형식으로 읽을 수 없는 줄이에요"
+    assert run_sample_line(line, "custom", custom)["ok"] is False
+    assert run_test_format(BUILTIN_FORMATS["webtob"], line)["ok"] is False
+    # tfmt 폭 계산 경로 (UTF-8 바이트로 자른다)
+    spec = compile_format('%{%Y-%m-%d}t "%r"')
+    assert parse_with_spec('2026-11-18 "GET /a HTTP/1.1" \ud800', spec) is None
+    assert parse_with_spec('\ud8002026-11-18 "GET /a HTTP/1.1"', spec) is None
+
+
+def test_surrogateescape_bytes_in_line_still_parse():
+    """원격 로그의 깨진 UTF-8 바이트(U+DC80..U+DCFF로 읽힘)는 awk처럼 그대로 읽는다."""
+    line = b'1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a\xff HTTP/1.1" 200 1'
+    parsed = parse_line(line.decode("utf-8", "surrogateescape"), "webtob")
+    assert parsed is not None and parsed.path == "/a\udcff"
+
+
+@pytest.mark.parametrize("pattern", ['%t %r %s', '%t %r\t%s', '%t %>r  %s', '%t x%r y'])
+def test_request_followed_by_whitespace_is_error(pattern):
+    with pytest.raises(FormatError, match=r'^%r은 따옴표로 감싸 주세요 \(예: "%r"\)$'):
+        compile_format(pattern)
+
+
+def test_request_followed_by_other_literal_or_end_is_ok():
+    assert compile_format('%t "%r"').last_essential == 3
+    assert compile_format('%t [%r]').tokens[-2].directive == "r"
+    spec = compile_format('%t %s %r')  # %r이 마지막이면 줄 끝까지
+    assert parse_with_spec('[18/Nov/2026:10:00:01 +0900] 200 GET /a HTTP/1.1', spec) == \
+        ParsedLine("GET", "/a", 200, "20261118")
+
+
+def test_status_with_less_than_modifier():
+    spec = compile_format('%h %l %u %t "%r" %<s %b')
+    assert spec.has_status
+    assert [t.directive for t in spec.tokens if t.kind == "field"] == \
+        ["h", "l", "u", "t", "r", "s", "b"]
+    assert spec.tokens[spec.last_essential].text == "%<s"
+    line = '1.1.1.1 - - [18/Nov/2026:10:00:01 +0900] "GET /a HTTP/1.1" 404 1'
+    assert parse_with_spec(line, spec) == ParsedLine("GET", "/a", 404, "20261118")

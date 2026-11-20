@@ -7,9 +7,8 @@ AWK PARITY CONTRACT (awk가 그대로 따라야 하는 의미, v1)
 - 줄 끝: 끝의 "\n" 하나를 제거한 뒤 끝의 "\r" 하나를 제거한다 (awk: sub(/\r$/, "")).
 - 공백 분할: 필드/토큰은 [ \t]+ 로만 나눈다 (앞뒤 space/tab은 먼저 제거).
   U+3000 같은 유니코드 공백은 구분자가 아니다. awk 기본 분할과 같다.
-- 기본 제공 형식과 사용자 형식: 아래 FORMAT PARSE CONTRACT를 따른다.
-  (Task 2 전까지 원격 awk는 v1 CLF 파서를 쓴다: 첫 [dd/Mon/yyyy에서 날짜, 첫 "..." 안의
-  토큰 2개 이상 + 첫 토큰 ^[A-Z]+$, 닫는 따옴표 뒤 첫 토큰이 3자리 숫자여야 status.)
+- 기본 제공 형식과 사용자 형식: 아래 FORMAT PARSE CONTRACT를 따른다. 원격 awk의 parse()는
+  napi.remote.awk_program이 같은 FormatSpec에서 토큰마다 펼쳐 생성한다.
 - custom: 줄을 [ \t]+로 나눈 N번째(1부터) 필드를 쓴다. path 필드의 양끝 따옴표는 제거,
   제거 후 빈 문자열이면 실패. iso8601은 필드가 yyyy-mm-dd로 시작해야 한다.
 - 정규화: ?/# 이후 제거 -> "/"로 나눠 각 조각의 ";" 이후 제거 -> 빈 조각 버림
@@ -23,6 +22,8 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
 - 토큰: lit(정확히 맞아야 하는 리터럴 text), ws(공백 리터럴), field(directive).
   compile_format은 패턴의 리터럴을 EXACT 부분(lit)과 space/tab 연속(ws)으로 번갈아 나눈다.
   field 두 개가 붙는 것을 막으므로 field 다음 토큰은 항상 lit 또는 ws이거나 없다.
+  %r 바로 다음이 ws이면 컴파일 오류다 (요청 줄에는 공백이 있으므로 따옴표 등으로 감싸야 한다).
+  %>s와 %<s는 %s와 같다. 짝 없는 서로게이트(U+D800..U+DFFF)가 든 패턴은 컴파일 오류다.
 - 필수 토큰: 요청(r, m, U), 날짜(t, time_layout이 있는 tfmt), 상태(s).
   last_essential = 그중 마지막 토큰의 위치. 토큰을 앞에서부터 차례로 처리하다가 last_essential
   토큰을 처리하면 그 즉시 성공한다. 그 뒤 토큰은 보지 않는다(없거나 틀려도 된다).
@@ -31,7 +32,10 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   (Python 구현은 0부터). 줄 앞 공백은 건너뛰지 않는다 (패턴이 ws로 시작할 때만 ws가 먹는다).
 - lit: 커서 위치의 부분 문자열이 text와 정확히 같아야 한다. 같으면 커서를 length(text)만큼 옮긴다.
 - ws: 커서 위치에 space/tab이 하나 이상 있어야 하고, 이어지는 space/tab을 모두 먹는다.
-- field (t 제외)의 값. 다음 토큰은 last_essential 뒤에 있어도 경계로 쓴다:
+- 줄에 UTF-8(surrogateescape)로 되돌릴 수 없는 서로게이트가 있으면 실패다
+  (원격 로그의 깨진 바이트는 U+DC80..U+DCFF로 읽히므로 해당하지 않는다).
+- field (t와 tfmt 제외 — 둘은 아래 규칙대로 스스로 끝을 정한다)의 값.
+  다음 토큰은 last_essential 뒤에 있어도 경계로 쓴다:
   - 다음 토큰이 lit이면 커서부터 그 text가 처음 나오는 위치 직전까지 (빈 값도 된다).
     text가 없으면 실패. 커서는 그 위치(다음 lit의 시작)로 옮긴다.
   - 다음 토큰이 ws이면 커서부터 처음 나오는 space 또는 tab 직전까지, 없으면 줄 끝까지.
@@ -48,6 +52,8 @@ FORMAT PARSE CONTRACT (compile_format이 만든 FormatSpec을 한 줄에 적용�
   그 tfmt가 last_essential이면 그대로 성공하고, 아니면 실패로 친다. awk에서도 다음 토큰
   (lit/ws)은 continuation 바이트 위치에서 맞을 수 없으므로 결과가 같다.)
   Y, m, d는 ^[0-9]+$이어야 하고, b는 v1 월 맵에 있어야 한다(→ 두 자리 월). 날짜 = Y m d.
+  레이아웃에 같은 날짜 항목이 여러 번 있으면(m과 b도 같은 항목) 모두 검사하고 나중 것이 이긴다.
+  레이아웃의 리터럴 글자와 H, M, S, z, y 자리는 비교하지 않는다 (폭에만 들어간다).
   time_layout이 비어 있으면 날짜를 정하지 않는다(폭만 검사).
 - r: 값의 앞뒤 space/tab을 지우고 [ \t]+로 나눈다. 토큰이 2개 이상이고 첫 토큰이 ^[A-Z]+$이어야 한다.
   method = 첫 토큰, path = 둘째 토큰.
@@ -106,6 +112,9 @@ _WS_RE = re.compile(r"[ \t]+")
 
 _ERROR_UNREADABLE = "이 형식으로 읽을 수 없는 줄이에요"
 _ERROR_REQUIRED = "API 호출을 셀 수 없는 형식이에요 (요청/시각 필요)"
+_ERROR_BAD_CHAR = "형식에 쓸 수 없는 문자가 있어요"
+_ERROR_BARE_REQUEST = '%r은 따옴표로 감싸 주세요 (예: "%r")'
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 
 class FormatError(ValueError):
@@ -195,6 +204,8 @@ def _literal_tokens(text: str) -> list[Token]:
 
 def compile_format(pattern: str) -> FormatSpec:
     """Apache LogFormat 문자열을 토큰 목록으로 바꾼다. 잘못되면 FormatError."""
+    if _SURROGATE_RE.search(pattern):  # 짝 없는 서로게이트는 UTF-8(awk 소스)로 옮길 수 없다
+        raise FormatError(_ERROR_BAD_CHAR)
     tokens: list[Token] = []
     lit: list[str] = []
     i, n = 0, len(pattern)
@@ -209,7 +220,7 @@ def compile_format(pattern: str) -> FormatSpec:
             lit.append("%")
             i = j + 1
             continue
-        if j < n and pattern[j] == ">":
+        if j < n and pattern[j] in "<>":  # %>s, %<s (Apache 수정자)
             j += 1
         arg = None
         if j < n and pattern[j] == "{":
@@ -233,6 +244,9 @@ def compile_format(pattern: str) -> FormatSpec:
             tokens.append(Token("field", text, letter if letter in _DIRECTIVES else "skip"))
     if lit:
         tokens += _literal_tokens("".join(lit))
+    for tok, nxt in zip(tokens, tokens[1:]):
+        if tok.kind == "field" and tok.directive == "r" and nxt.kind == "ws":
+            raise FormatError(_ERROR_BARE_REQUEST)
 
     dirs = {t.directive for t in tokens if t.kind == "field"}
     has_request = "r" in dirs or {"m", "U"} <= dirs
@@ -330,8 +344,20 @@ def _ws_start(line: str, pos: int) -> int:
     return pos
 
 
+def _encodable(line: str) -> bool:
+    """UTF-8(surrogateescape)로 되돌릴 수 있는 줄인가. 원격 로그의 깨진 바이트는
+    U+DC80..U+DCFF로 들어와 통과하고, 그 밖의 짝 없는 서로게이트(화면에서 넣은 값)는 거른다."""
+    try:
+        line.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def parse_with_spec(line: str, spec: FormatSpec) -> ParsedLine | None:
     """FORMAT PARSE CONTRACT대로 한 줄을 읽는다. 읽을 수 없으면 None."""
+    if not _encodable(line):
+        return None
     line = _strip_eol(line)
     toks = spec.tokens
     pos = 0
@@ -455,7 +481,7 @@ def parse_line(line: str, fmt: str, custom: CustomFormat | None = None,
                formats: Sequence[LogFormatDef] = ()) -> ParsedLine | None:
     """한 줄을 읽는다. 읽을 수 없거나 형식을 모르면 None. path는 정규화 전 원문."""
     if fmt == "custom":
-        return _parse_custom(_strip_eol(line), custom)
+        return _parse_custom(_strip_eol(line), custom) if _encodable(line) else None
     try:
         spec = resolve_format(fmt, formats)
     except FormatError:
