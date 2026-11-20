@@ -93,30 +93,31 @@ def _is_param(seg: str) -> bool:
 _STAR = "{*}"
 
 
-def _match_template(tpl: list[str], segs: list[str]) -> int | None:
-    """일치하면 리터럴 조각 수, 아니면 None.
+def _match_template(tpl: list[str], segs: list[str]) -> tuple[int, bool] | None:
+    """일치하면 (리터럴 조각 수, 정규화 리터럴로 맞았는지), 아니면 None.
 
     - `{param}` 조각은 아무 조각과 일치한다 (로그의 `{*}` 포함).
     - 리터럴 조각은 같은 문자열과 일치한다. 그리고 원격 정규화 규칙
       (napi.logformat.is_variable_segment)이 그 리터럴을 `{*}`로 바꾸는 경우에는
       로그의 `{*}`와도 일치한다 (예: `retrieveAccountBalanceV2`, `2024`). 서버에서 이미
-      `{*}`로 뭉개졌기 때문이다.
-    - 이렇게 `{*}`로 맞은 리터럴은 우선순위용 리터럴 수에 넣지 않는다. `{*}` 행은 그
-      리터럴인지 같은 자리의 `{param}`인지 알 수 없으므로, 같은 자리에 `{param}` 대안이
-      있으면 둘은 동률이 되어 스펙 순서(먼저 나온 것)로 정해진다. 대안이 없으면 그
-      리터럴 템플릿만 후보라서 그대로 매칭된다.
+      `{*}`로 뭉개졌기 때문이다. 이것을 "정규화 리터럴 매칭"이라 부르고 두 번째 값이 True가 된다.
+    - 정규화 리터럴 매칭은 우선순위용 리터럴 수에 넣지 않는다. `{*}` 행은 그 리터럴인지
+      같은 자리의 `{param}`(또는 다른 정규화 리터럴)인지 알 수 없기 때문이다. 동률 처리는 match() 참고.
     """
     if len(tpl) != len(segs):
         return None
     literals = 0
+    via_normalized = False
     for t, s in zip(tpl, segs):
         if _is_param(t):
             continue
         if t == s:
             literals += 1
-        elif not (s == _STAR and is_variable_segment(t)):
+        elif s == _STAR and is_variable_segment(t):
+            via_normalized = True
+        else:
             return None
-    return literals
+    return literals, via_normalized
 
 
 def match(
@@ -125,6 +126,21 @@ def match(
     mapping: PathMapping,
     exclude: list[str],
 ) -> MatchResult:
+    """서버별 집계 행을 명세 오퍼레이션에 배정한다.
+
+    한 행은 메서드가 같고 템플릿이 맞는 후보 중 리터럴 조각 수가 가장 많은 후보에 간다
+    (`/users/me` 행은 `/users/{id}`가 아니라 `/users/me`로). 최고 리터럴 수가 같은 후보가
+    여럿이면:
+
+    - 동률 후보 중 하나라도 정규화 리터럴 매칭(로그 `{*}` ↔ is_variable_segment 리터럴)으로
+      맞았다면, 그 행의 통계 전체를 동률 후보 **모두**에 기록한다. 서버에서 이미 뭉개진 `{*}`
+      행은 어느 API의 호출인지 알 수 없는데, 하나만 고르면 정렬된 명세에서는 리터럴
+      (`retrieveAccountBalanceV2`)이 늘 `{accountNo}`보다 앞서 살아 있는 API가 "잠듦"(삭제
+      권고)으로 나온다. 거짓 "깨어 있음"이 거짓 "잠듦"보다 낫다.
+    - 그렇지 않으면(평범한 `{param}`끼리의 동률 등) 기존처럼 스펙 순서상 먼저 나온 후보에만 기록한다.
+
+    그래서 오퍼레이션별 calls 합계가 실제 로그 호출 수보다 클 수 있다 (의도된 동작).
+    """
     patterns = [_segments(p) for p in exclude]
     result = MatchResult()
     templates: list[tuple[SpecOperation, list[str]]] = []
@@ -143,16 +159,24 @@ def match(
             if _excluded(path, patterns):
                 continue
             segs = _segments(path)
-            best: SpecOperation | None = None
+            tied: list[str] = []  # 최고 리터럴 수 후보들의 키, 스펙 순서
             best_lit = -1
+            tied_normalized = False
             for op, tpl in templates:
                 if op.method != r.method:
                     continue
-                lit = _match_template(tpl, segs)
-                if lit is not None and lit > best_lit:  # 동률이면 스펙 순서상 먼저
-                    best, best_lit = op, lit
-            if best is not None:
-                result.per_op[best.key].add(server, r)
+                m = _match_template(tpl, segs)
+                if m is None:
+                    continue
+                lit, via_normalized = m
+                if lit > best_lit:
+                    tied, best_lit, tied_normalized = [op.key], lit, via_normalized
+                elif lit == best_lit and op.key not in tied:
+                    tied.append(op.key)
+                    tied_normalized = tied_normalized or via_normalized
+            if tied:
+                for key in tied if tied_normalized else tied[:1]:
+                    result.per_op[key].add(server, r)
             else:
                 result.unmatched.setdefault((r.method, path), MatchedStats()).add(server, r)
     return result

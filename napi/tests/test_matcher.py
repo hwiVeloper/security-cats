@@ -138,13 +138,62 @@ def test_star_matches_literal_that_normalizes_to_star():
     assert r.unmatched == {}
 
 
-def test_normalizing_literal_vs_param_keeps_spec_order():
-    """{*} 행은 어느 쪽인지 알 수 없다 → 리터럴 우선을 주지 않고 스펙 순서로 정한다."""
-    lit, par = op("GET", "/api/retrieveAccountBalanceV2"), op("GET", "/api/{id}")
-    r = match({"A": [row("GET", "/api/{*}")]}, [lit, par], NOMAP, [])
-    assert (r.per_op[lit.key].calls, r.per_op[par.key].calls) == (1, 0)
-    r = match({"A": [row("GET", "/api/{*}")]}, [par, lit], NOMAP, [])
-    assert (r.per_op[lit.key].calls, r.per_op[par.key].calls) == (0, 1)
+def test_normalizing_literal_vs_param_credits_both_in_any_order():
+    """{*} 행은 리터럴인지 {param}인지 알 수 없다 → 동률 후보 모두에 기록한다 (거짓 '잠듦' 방지)."""
+    lit, par = op("GET", "/accounts/retrieveAccountBalanceV2"), op("GET", "/accounts/{accountNo}")
+    for order in ([lit, par], [par, lit]):
+        r = match({"A": [row("GET", "/accounts/{*}", count=7)]}, order, NOMAP, [])
+        assert (r.per_op[lit.key].calls, r.per_op[par.key].calls) == (7, 7)
+        assert r.unmatched == {}
+
+
+def test_two_normalizing_literal_siblings_both_credited():
+    bal = op("GET", "/accounts/retrieveAccountBalanceV2")
+    his = op("GET", "/accounts/retrieveAccountHistoryV2")
+    r = match({"A": [row("GET", "/accounts/{*}", count=4)]}, [bal, his], NOMAP, [])
+    assert (r.per_op[bal.key].calls, r.per_op[his.key].calls) == (4, 4)
+
+
+def test_plain_param_tie_still_goes_to_first_in_spec_order():
+    """정규화 리터럴이 끼지 않은 동률은 그대로 스펙 순서상 먼저 나온 것에만 기록한다."""
+    a, b = op("GET", "/v1/{x}/items"), op("GET", "/v1/{y}/items")
+    r = match({"A": [row("GET", "/v1/{*}/items")]}, [a, b], NOMAP, [])
+    assert (r.per_op[a.key].calls, r.per_op[b.key].calls) == (1, 0)
+    r = match({"A": [row("GET", "/v1/{*}/items")]}, [b, a], NOMAP, [])
+    assert (r.per_op[a.key].calls, r.per_op[b.key].calls) == (0, 1)
+
+
+def test_normalizing_literal_in_lower_ranked_candidate_does_not_spread():
+    """정규화 리터럴로 맞은 후보가 최고 리터럴 수에 못 미치면 동률에 끼지 않는다."""
+    a = op("GET", "/v1/retrieveAccountBalanceV2/{z}")  # 리터럴 1 (v1)
+    b, c = op("GET", "/v1/{x}/items"), op("GET", "/v1/{y}/items")  # 리터럴 2
+    r = match({"A": [row("GET", "/v1/{*}/items")]}, [a, b, c], NOMAP, [])
+    assert (r.per_op[a.key].calls, r.per_op[b.key].calls, r.per_op[c.key].calls) == (0, 1, 0)
+
+
+def test_exact_literal_unaffected_by_normalizing_sibling():
+    me = op("GET", "/api/v1/users/me")
+    par = op("GET", "/api/v1/users/{id}")
+    nl = op("GET", "/api/v1/users/retrieveAccountBalanceV2")
+    r = match({"A": [row("GET", "/api/v1/users/me", count=5)]}, [nl, par, me], NOMAP, [])
+    assert r.per_op[me.key].calls == 5
+    assert (r.per_op[par.key].calls, r.per_op[nl.key].calls) == (0, 0)
+
+
+def test_credited_row_stats_merge_into_each_op_without_double_counting():
+    lit, par = op("GET", "/accounts/retrieveAccountBalanceV2"), op("GET", "/accounts/{accountNo}")
+    a = [
+        row("GET", "/accounts/{*}", "2xx", 3, "20260901", "20261020"),
+        row("GET", "/accounts/{*}", "5xx", 1, "20261001", "20261101"),
+    ]
+    b = [row("GET", "/accounts/{*}", "2xx", 2, "20260801", "20261110")]
+    r = match({"A": a, "B": b}, [lit, par], NOMAP, [])
+    for key in (lit.key, par.key):
+        s = r.per_op[key]
+        assert s.calls == 6
+        assert (s.first, s.last) == ("20260801", "20261110")
+        assert s.by_server == {"A": 4, "B": 2}
+        assert s.by_status == {"2xx": 5, "5xx": 1}
 
 
 def test_normalizing_literal_does_not_count_as_literal():
