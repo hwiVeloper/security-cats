@@ -13,7 +13,7 @@
     rip: { label: "영면", color: "#8b8f98", desc: "deprecated이고 호출도 없어요. 지워도 될 것 같아요" },
     sleeptalk: { label: "잠꼬대", color: "#e8590c", desc: "deprecated인데 아직 호출되고 있어요" },
     ghost: { label: "유령", color: "#0ea5b7", desc: "명세에 없는데 호출되고 있어요" },
-    probe: { label: "외부 탐색 시도", color: "#8a7a6e", desc: "명세에 없는 경로로 404만 났어요. 외부에서 찔러 본 요청으로 보여요" }
+    probe: { label: "외부 탐색 시도", color: "#8a7a6e", desc: "명세에 없는 경로로, 외부에서 찔러 본 요청으로 보여요" }
   };
   /* 상태 설명 (도움말 대화상자, 탭 아래 한 줄, 리포트 표지가 같이 쓴다).
    * criteria(n): n = 최근 기준 일수 (awake_days). 모르면 null → "최근 기준 기간(기본 30일)". */
@@ -30,10 +30,12 @@
     sleeptalk: { mean: "은퇴했는데 아직 불리는 API", action: "호출하는 쪽을 새 API로 옮긴 뒤 삭제",
       criteria: function () { return "명세에 deprecated 표시가 있는데, 아직 호출되고 있어요"; } },
     ghost: { mean: "명세에 없는 API", action: "명세에 추가하거나 차단 검토",
-      criteria: function () { return "명세에 없는 경로인데 로그에 호출 기록이 있어요 (4xx 외 응답 포함)"; } },
+      criteria: function () { return "API 범위(명세 경로의 맨 앞 조각 + 직접 추가한 범위) 안의 경로인데 명세에 없고, 4xx 외 응답이 있어요"; } },
     probe: { mean: "밖에서 찔러 본 요청", action: "판정 대상 아님 (참고용)",
-      criteria: function () { return "명세에 없는 경로로 4xx(주로 404)만 받았어요. 스캐너나 봇으로 보여요"; } }
+      criteria: function () { return "스캐너 패턴(숨김 파일, .yml·.php 등)에 걸리거나, API 범위 밖이거나, 4xx만 받은 명세 밖 경로예요"; } }
   };
+  /* 외부 탐색 시도로 분류한 이유 (ApiResult.probe_reason) */
+  var PROBE_REASON = { scanner: "스캐너 패턴", out_of_scope: "API 범위 밖", "4xx_only": "4xx 응답만" };
   Object.keys(HELP).forEach(function (k) {
     STATUS_META[k].mean = HELP[k].mean;
     STATUS_META[k].criteria = HELP[k].criteria;
@@ -479,12 +481,13 @@
       ["operationId", api.operation_id || "—"],
       ["태그", (api.tags || []).length ? api.tags.join(", ") : "—"],
       ["명세", api.in_spec ? (api.deprecated ? "있음 (deprecated)" : "있음") : "없음"],
+      api.status === "probe" && PROBE_REASON[api.probe_reason] ? ["분류 이유", PROBE_REASON[api.probe_reason]] : null,
       ["호출 수", fmtNum(api.calls)],
       ["최초 호출", fmtDate(api.first)],
       ["마지막 호출", fmtDate(api.last)],
       ["응답 분포", distText(api.by_status)]
     ];
-    container.appendChild(el("dl", { class: "kv" }, kv.map(function (p) {
+    container.appendChild(el("dl", { class: "kv" }, kv.filter(Boolean).map(function (p) {
       return [el("dt", null, p[0]), el("dd", null, p[1])];
     })));
     var bar = distBar(api.by_status);

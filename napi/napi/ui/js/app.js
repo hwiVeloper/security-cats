@@ -15,6 +15,7 @@
     configPath: "",
     results: {},
     error: null,
+    defaultProbePatterns: [], // get_state의 default_probe_patterns (설정 화면의 스캐너 패턴 기본값)
     current: null,
     result: null,
     window: "365",
@@ -61,6 +62,7 @@
         state.configPath = st.config_path || "";
         state.results = st.results || {};
         state.error = st.error || null;
+        if (Array.isArray(st.default_probe_patterns)) state.defaultProbePatterns = st.default_probe_patterns.slice();
       }
       var settings = state.config.settings || {};
       if (!state.windowTouched && settings.default_window) state.window = String(settings.default_window);

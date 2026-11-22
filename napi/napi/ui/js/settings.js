@@ -87,8 +87,16 @@
         min_coverage_days: th.min_coverage_days === undefined ? 90 : th.min_coverage_days
       },
       exclude_paths: (s.exclude_paths || []).slice(),
+      api_scopes: (s.api_scopes || []).slice(),
+      // null = 기본 스캐너 패턴 (get_state의 default_probe_patterns). 목록이면 (비어 있어도) 기본값 대신 쓴다.
+      probe_patterns: Array.isArray(s.probe_patterns) ? s.probe_patterns.slice() : null,
       notes: s.notes || {}
     };
+  }
+
+  function defaultProbePatterns() {
+    var st = app() && app().state;
+    return (st && Array.isArray(st.defaultProbePatterns)) ? st.defaultProbePatterns.slice() : [];
   }
 
   function wrap(svc, orig) {
@@ -179,6 +187,8 @@
     if (/명세/.test(text)) return "spec";
     if (/기준값/.test(text)) return "thresholds";
     if (/제외 경로/.test(text)) return "exclude";
+    if (/API 범위/.test(text)) return "api_scopes";
+    if (/스캐너 패턴/.test(text)) return "probe_patterns";
     return "_";
   }
 
@@ -330,6 +340,8 @@
           path_mapping: { strip_prefix: trim(s.path_mapping.strip_prefix), add_prefix: trim(s.path_mapping.add_prefix) },
           thresholds: { awake_days: posInt(s.thresholds.awake_days), min_coverage_days: posInt(s.thresholds.min_coverage_days) },
           exclude_paths: s.exclude_paths.map(trim).filter(Boolean),
+          api_scopes: s.api_scopes.map(trim).filter(Boolean),
+          probe_patterns: s.probe_patterns === null ? null : s.probe_patterns.map(trim).filter(Boolean),
           notes: notes
         };
       })
@@ -674,6 +686,8 @@
     form.appendChild(el("fieldset", null, el("legend", null, "제외 경로"),
       el("div", { class: "fields" }, field("한 줄에 하나씩 (* 와 ** 를 쓸 수 있어요)", ex, errText(E.svc, "exclude"), { full: true }))));
 
+    form.appendChild(renderProbeFields(s, E));
+
     var serverBox = el("fieldset", null, el("legend", null, "서버 (" + s.servers.length + "대)"),
       el("p", { class: "notice" }, TIER_NOTICE));
     s.servers.forEach(function (sv, i) { serverBox.appendChild(renderServer(w, sv, i, E.servers[i] || {})); });
@@ -709,6 +723,39 @@
     form.appendChild(el("div", { class: "row-btns" }, del,
       w.armDelete && notes ? el("span", { class: "warn small" }, "이 서비스의 메모 " + notes + "개도 함께 지워져요") : null,
       el("span", { class: "muted small" }, "저장을 눌러야 파일에 반영돼요")));
+  }
+
+  // 유령/외부 탐색 구분: API 범위 추가 + 스캐너 패턴 (napi/classifier.py)
+  function renderProbeFields(s, E) {
+    var scopes = el("textarea", { rows: "2", spellcheck: "false", placeholder: "/legacy\n/internal/api" });
+    scopes.value = s.api_scopes.join("\n");
+    scopes.addEventListener("input", function () { s.api_scopes = scopes.value.split(/\r?\n/); changed(); });
+
+    var pats = el("textarea", { rows: "5", spellcheck: "false" });
+    var state = el("span", { class: "muted small", "aria-live": "polite" });
+    var reset = el("button", { type: "button", class: "btn" }, "기본값으로");
+    function sync() {
+      var isDefault = s.probe_patterns === null;
+      reset.disabled = isDefault;
+      state.textContent = isDefault ? "기본 패턴을 쓰고 있어요" : "직접 고친 패턴을 쓰고 있어요";
+    }
+    pats.value = (s.probe_patterns === null ? defaultProbePatterns() : s.probe_patterns).join("\n");
+    pats.addEventListener("input", function () { s.probe_patterns = pats.value.split(/\r?\n/); changed(); sync(); });
+    reset.addEventListener("click", function () {
+      s.probe_patterns = null;
+      pats.value = defaultProbePatterns().join("\n");
+      changed();
+      sync();
+    });
+    sync();
+
+    return el("fieldset", null, el("legend", null, "유령/외부 탐색 구분"),
+      el("div", { class: "fields" },
+        field("API 범위 추가", scopes, errText(E.svc, "api_scopes"), { full: true,
+          hint: "명세 경로의 맨 앞 조각(예: /v1)은 자동으로 API 범위예요. 그 밖의 경로 중 API인 곳이 있으면 적어 주세요." }),
+        field("스캐너 패턴", pats, errText(E.svc, "probe_patterns"), { full: true,
+          hint: "여기에 걸리는 경로는 응답과 관계없이 '외부 탐색 시도'로 분류해요. * 는 한 조각, ** 는 여러 조각" }),
+        el("div", { class: "row-btns" }, reset, state)));
   }
 
   function renderServer(w, sv, i, E) {

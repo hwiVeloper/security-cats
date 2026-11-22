@@ -1,7 +1,7 @@
 /* 브라우저 단독 미리보기용 가짜 api. 주소에 ?mock=1이 있을 때만 켜진다.
  * window.pywebview.api에 실제 api.py와 같은 이름의 Promise 함수를 둔다.
  * 수치는 시안 v3를 그대로 쓴다: 161개 (깨어있음 128, 꾸벅꾸벅 14, 잠듦 9, 영면 3, 잠꼬대 2, 유령 5)
- * + 외부 탐색 시도 6개, WAS-03 로그 부족(신뢰도 low).
+ * + 외부 탐색 시도 7개, WAS-03 로그 부족(신뢰도 low).
  *
  * 설정·스캔 (Task 13):
  * - 비밀번호: 라운드페이 API의 WAS-02만 아직 입력되지 않은 상태로 시작한다.
@@ -11,6 +11,11 @@
  *   3번째 서버는 "인증 실패"로 끝난다.
  *   명세 출처가 "파일"인 서비스는 명세 단계에서 실패한다 (failed 화면 확인용).
  * - save_config는 napi/config.py validate_config와 같은 문구로 검사한다.
+ *
+ * 유령 / 외부 탐색 구분:
+ * - get_state는 default_probe_patterns(classifier.DEFAULT_PROBE_PATTERNS와 같은 값)를 준다.
+ * - 라운드페이 API는 api_scopes에 /internal, /v2를 직접 추가해 둔 상태다 (그래서 /internal/health는 유령).
+ * - 외부 탐색 시도 7개는 분류 이유가 모두 나온다: 스캐너 패턴 4, API 범위 밖 2 (하나는 3xx), 4xx 응답만 1.
  *
  * 형식·경로·비밀번호 (Task 5):
  * - 사용자 형식 "webtob_vhost"를 정산 API의 SETTLE-01이 쓴다 (삭제 불가 확인용). SETTLE-01은 로그 경로가 2개고
@@ -26,6 +31,12 @@
   if (!/[?&]mock=1(&|$)/.test(root.location.search)) return;
 
   var TODAY = "20261118";
+  // napi/classifier.py DEFAULT_PROBE_PATTERNS와 같은 값
+  var DEFAULT_PROBE_PATTERNS = [
+    "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
+    "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
+    "**/phpmyadmin*", "/cgi-bin/**"
+  ];
   var SERVERS = ["WAS-01", "WAS-02", "WAS-03"];
 
   // 결정적 난수 (mulberry32)
@@ -74,7 +85,8 @@
       by_status: t ? t.by_status : {}, by_server: t ? t.by_server : {},
       in_spec: extra.in_spec !== false, deprecated: !!extra.deprecated,
       tags: extra.tags || [], summary: extra.summary || null,
-      operation_id: extra.operation_id || null, note: null
+      operation_id: extra.operation_id || null, note: null,
+      probe_reason: extra.probe_reason || null
     };
   }
 
@@ -150,12 +162,16 @@
     ].forEach(function (a) {
       apis.push(api(a[0], a[1], "ghost", traffic(a[2], randInt(0, 20), randInt(100, 363)), { in_spec: false }));
     });
-    // 외부 탐색 시도 6 (404만)
+    // 외부 탐색 시도 7: 스캐너 패턴 4, API 범위 밖 2, 4xx 응답만 1
     [
-      ["GET", "/.env", 41], ["GET", "/wp-login.php", 133], ["GET", "/phpmyadmin/index.php", 18],
-      ["POST", "/cgi-bin/luci", 9], ["GET", "/actuator/env", 27], ["GET", "/admin/<script>alert(1)</script>", 2]
+      ["GET", "/.env", 41, "scanner"], ["GET", "/wp-login.php", 133, "scanner"],
+      ["GET", "/phpmyadmin/index.php", 18, "scanner"], ["POST", "/cgi-bin/luci", 9, "scanner"],
+      ["GET", "/actuator/env", 27, "out_of_scope"], ["GET", "/admin/<script>alert(1)</script>", 2, "out_of_scope"],
+      ["GET", "/v1/payments/{*}/refund-all", 6, "4xx_only"]
     ].forEach(function (a) {
-      apis.push(api(a[0], a[1], "probe", traffic(a[2], randInt(0, 60), randInt(60, 300), { only4xx: true }), { in_spec: false }));
+      var t = traffic(a[2], randInt(0, 60), randInt(60, 300), { only4xx: true });
+      if (a[1] === "/actuator/env") t.by_status = { "3xx": 20, "4xx": 7 }; // 범위 밖이면 3xx가 있어도 외부 탐색 시도
+      apis.push(api(a[0], a[1], "probe", t, { in_spec: false, probe_reason: a[3] }));
     });
     return apis;
   }
@@ -176,6 +192,7 @@
         path_mapping: { strip_prefix: "", add_prefix: "" },
         thresholds: { awake_days: 30, min_coverage_days: 90 },
         exclude_paths: [],
+        api_scopes: ["/internal", "/v2"],
         notes: {
           "GET /v1/settlements/yearly": { reason: "연 1회 정산용 (1월)", author: "홍길동", date: "2026-11-02" },
           "GET /internal/health": { reason: "L4 헬스체크용", author: "김운영", date: "2026-10-15" }
@@ -192,13 +209,13 @@
           port: 22, auth: "key", key_file: "C:\\Users\\napi\\.ssh\\id_ed25519" }],
         path_mapping: { strip_prefix: "", add_prefix: "" },
         thresholds: { awake_days: 30, min_coverage_days: 90 },
-        exclude_paths: [], notes: {}
+        exclude_paths: [], api_scopes: [], probe_patterns: ["**/.*", "**/*.php", "/cgi-bin/**"], notes: {}
       },
       {
         name: "회원 API",
         spec: { type: "openapi", source: "url", location: "https://swagger.test.local/member/v3/api-docs" },
         servers: [], path_mapping: { strip_prefix: "", add_prefix: "" },
-        thresholds: { awake_days: 30, min_coverage_days: 90 }, exclude_paths: [], notes: {}
+        thresholds: { awake_days: 30, min_coverage_days: 90 }, exclude_paths: [], api_scopes: [], notes: {}
       }
     ]
   };
@@ -292,6 +309,18 @@
       if (!String(svc.name || "").trim()) errors.push("서비스 이름이 비어 있습니다.");
       if (seen[svc.name]) errors.push(label + ": 서비스 이름이 중복되었습니다.");
       seen[svc.name] = true;
+      (svc.api_scopes || []).forEach(function (sc) {
+        sc = String(sc);
+        if (sc.charAt(0) !== "/" || /[\x00-\x1f*?]/.test(sc) || sc.indexOf("//") >= 0) {
+          errors.push(label + ": API 범위는 '/'로 시작하고 * ? // 와 제어 문자가 없어야 해요: " + JSON.stringify(sc));
+        }
+      });
+      (svc.probe_patterns || []).forEach(function (pt) {
+        pt = String(pt);
+        if (!pt.trim() || /[\x00-\x1f]/.test(pt)) {
+          errors.push(label + ": 스캐너 패턴은 비어 있거나 제어 문자를 담을 수 없어요: " + JSON.stringify(pt));
+        }
+      });
       (svc.servers || []).forEach(function (sv) {
         var sl = label + " / 서버 '" + sv.name + "'";
         if (!String(sv.host || "").trim()) errors.push(sl + ": 호스트가 비어 있습니다.");
@@ -683,7 +712,8 @@
         var r = results[s.name];
         out[s.name] = r ? { sleeping: r.sleeping, scanned_at: r.scanned_at } : null;
       });
-      return reply({ config: config, config_path: configPath, results: out, error: null });
+      return reply({ config: config, config_path: configPath, results: out, error: null,
+        default_probe_patterns: DEFAULT_PROBE_PATTERNS.slice() });
     },
     get_result: function (name) { return reply(results[name] || null); },
     save_note: function (name, opKey, reason, author) {
