@@ -594,3 +594,13 @@ def test_validate_accepts_probe_patterns():
     assert _errs(lambda s: setattr(s, "probe_patterns", ["**/.*", "/cgi-bin/**"])) == []
     assert _errs(lambda s: setattr(s, "probe_patterns", [])) == []
     assert _errs(lambda s: setattr(s, "probe_patterns", None)) == []
+
+
+def test_api_scopes_trimmed_on_load(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "services:\n- name: a\n  spec: {location: x}\n  servers: []\n"
+        "  api_scopes: ['/legacy ', '  /internal/api']\n",
+        encoding="utf-8",
+    )
+    assert load_config(p).services[0].api_scopes == ["/legacy", "/internal/api"]

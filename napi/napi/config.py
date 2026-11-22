@@ -161,7 +161,7 @@ def _from_dict(d: dict) -> AppConfig:
                 exclude_paths=[_str(x) for x in (s.get("exclude_paths") or [])],
                 notes={_str(k): Note(**_fields(v, strs=("reason", "author", "date")))
                        for k, v in (s.get("notes") or {}).items()},
-                api_scopes=[_str(x) for x in _as_list(s.get("api_scopes"), "api_scopes")],
+                api_scopes=[_str(x).strip() for x in _as_list(s.get("api_scopes"), "api_scopes")],
                 probe_patterns=(None if s.get("probe_patterns") is None else
                                 [_str(x) for x in _as_list(s["probe_patterns"], "probe_patterns")]),
             ))
@@ -281,7 +281,8 @@ def validate_config(cfg: AppConfig) -> list[str]:
 
 
 def _scope_problems(svc: ServiceConfig, label: str) -> list[str]:
-    """API 범위 접두사와 스캐너 패턴 검사. napi/ui/js/settings.js의 같은 이름 규칙과 맞춘다."""
+    """API 범위 접두사와 스캐너 패턴 검사. 설정 화면(settings.js)은 따로 검사하지 않고
+    이 문구("API 범위" / "스캐너 패턴")를 보고 해당 칸에 오류를 붙인다."""
     errors: list[str] = []
     for scope in svc.api_scopes:
         if (not scope.startswith("/") or _GLOB_CONTROL_RE.search(scope)

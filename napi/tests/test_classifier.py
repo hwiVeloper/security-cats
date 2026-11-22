@@ -313,3 +313,10 @@ def test_spec_ops_never_get_probe_reason():
     ops = [op("/v1/.env")]
     apis, *_ = run(ops, {"GET /v1/.env": stats(3, "20261110")})
     assert (apis[0].status, apis[0].probe_reason) == (Status.AWAKE, None)
+
+
+def test_root_spec_op_does_not_disable_scope():
+    ops = [op("/"), op("/v1/a")]
+    a = _one("/x", {"2xx": 1}, ops=ops)
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+    assert _one("/v1/b", {"2xx": 1}, ops=ops).status == Status.GHOST

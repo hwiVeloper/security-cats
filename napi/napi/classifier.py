@@ -122,13 +122,15 @@ def _reliability(
 
 def _api_scope(ops: list[SpecOperation], excluded: set[str]) -> set[str] | None:
     """제외되지 않은 명세 경로(쓰인 그대로)의 맨 앞 조각 집합. None이면 범위 제한 없음
-    (명세에 오퍼레이션이 없거나 맨 앞 조각이 `{param}`인 경로가 있을 때)."""
+    (루트 `/` 말고는 오퍼레이션이 없거나, 맨 앞 조각이 `{param}`인 경로가 있을 때)."""
     firsts: set[str] = set()
     for op in ops:
         if op.key in excluded:
             continue
         segs = _segments(_norm(op.path))
-        if not segs or _is_param(segs[0]):
+        if not segs:
+            continue  # 루트(/) 오퍼레이션은 범위를 정하지 않는다
+        if _is_param(segs[0]):
             return None
         firsts.add(segs[0])
     return firsts or None
