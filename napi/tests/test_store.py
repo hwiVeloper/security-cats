@@ -104,3 +104,21 @@ def test_load_old_result_without_line_counts(tmp_path):
     r = load_result("old", tmp_path)
     assert r is not None
     assert [(s.lines, s.parse_fail) for s in r.servers] == [(0, 0), (0, 0)]
+
+
+def test_load_old_result_without_thresholds(tmp_path):
+    d = result_to_dict(make_result())
+    d.pop("awake_days", None)
+    d.pop("min_coverage_days", None)
+    (tmp_path / "old.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    r = load_result("old", tmp_path)
+    assert r is not None
+    assert (r.awake_days, r.min_coverage_days) == (30, 90)
+
+
+def test_thresholds_roundtrip():
+    r = make_result()
+    r.awake_days, r.min_coverage_days = 14, 60
+    d = result_to_dict(r)
+    assert (d["awake_days"], d["min_coverage_days"]) == (14, 60)
+    assert result_from_dict(d) == r

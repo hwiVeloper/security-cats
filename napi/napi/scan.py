@@ -56,4 +56,6 @@ def run_scan(cfg: ServiceConfig, settings: Settings, window: str, collector: Col
                                s.elapsed_sec, s.truncated, s.total_lines, s.total_parse_fail)
                  for s in servers],
         probe_rest=probe_rest(servers),
+        awake_days=cfg.thresholds.awake_days,
+        min_coverage_days=cfg.thresholds.min_coverage_days,
     )

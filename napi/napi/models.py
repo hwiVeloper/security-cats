@@ -231,3 +231,6 @@ class ServiceResult:
     reliability: Reliability
     servers: list[ServerSummary]
     probe_rest: dict[str, int]
+    # 판정에 쓴 기준 (예전 결과 파일에는 없어서 기본값)
+    awake_days: int = 30
+    min_coverage_days: int = 90

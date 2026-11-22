@@ -116,3 +116,12 @@ def test_server_summary_carries_line_counts():
                                              FileStat("/b", "20250101", "20261118", 5, 1, 1)])
     r = run_with([ok, ServerScanResult("W2", False, error="x")])
     assert [(s.name, s.lines, s.parse_fail) for s in r.servers] == [("W1", 15, 3), ("W2", 0, 0)]
+
+
+def test_result_carries_thresholds():
+    from napi.models import Thresholds
+    c = cfg()
+    c.thresholds = Thresholds(awake_days=14, min_coverage_days=60)
+    ok = ServerScanResult("W1", True, files=[FileStat("/l", "20250101", "20261118", 3, 0, 0)])
+    r = run_with([ok, ServerScanResult("W2", False, error="x")], c)
+    assert (r.awake_days, r.min_coverage_days) == (14, 60)
