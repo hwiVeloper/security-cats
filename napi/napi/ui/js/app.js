@@ -431,6 +431,19 @@
 
   // ------------------------------------------------------------ start
 
+  // 로딩 표시(index.html #boot)에 잠든 냅냥 얼굴을 넣고, 첫 렌더가 끝나면(실패해도) 없앤다.
+  (function () {
+    var cat = $("boot-cat");
+    if (cat && !cat.firstChild && root.NapiCat) cat.appendChild(svgNode(root.NapiCat.face("asleep")));
+  })();
+
+  function hideBoot() {
+    var boot = $("boot");
+    if (!boot || boot.classList.contains("done")) return;
+    boot.classList.add("done");
+    setTimeout(function () { if (boot.parentNode) boot.parentNode.removeChild(boot); }, 250);
+  }
+
   var started = false;
   function start() {
     if (started) return;
@@ -440,7 +453,7 @@
     $("open-settings").addEventListener("click", function () { NapiApp.onSettings(); });
     $("backdrop").addEventListener("click", closeDetail);
     doc.addEventListener("keydown", function (e) { if (e.key === "Escape" && state.detailKey && !modals.length) closeDetail(); });
-    refresh().catch(function () { toast("화면을 불러오지 못했어요"); });
+    refresh().catch(function () { toast("화면을 불러오지 못했어요"); }).then(hideBoot);
   }
 
   root.addEventListener("pywebviewready", start);

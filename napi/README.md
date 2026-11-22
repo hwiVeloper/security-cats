@@ -189,6 +189,9 @@ powershell -File scripts\build.ps1 -OneDir    # 폴더형: dist\napi\napi.exe
 
 - 개발 의존성(PyInstaller, Pillow)은 `.venv` 에 설치되어 있어야 합니다: `.venv\Scripts\pip install -e ".[dev]"`
 - 아이콘은 `assets\napi.svg` 를 Pillow로 다시 그려서 만듭니다: `.venv\Scripts\python scripts\make_icon.py` (`assets\napi.ico`).
+- exe를 실행하면 창이 뜨기 전까지 진행 막대가 있는 로딩 화면이 보이고, 창 안에서도 첫 화면이 그려질 때까지 "불러오는 중…" 표시가 나옵니다.
+  로딩 화면 이미지(`assets\splash.png`)는 `.venv\Scripts\python scripts\make_splash.py` 로 다시 만듭니다.
+  진행 막대와 단계 문구는 `napi.spec` 의 Tcl 스크립트가 그리므로 좌표를 바꾸면 두 파일을 함께 고치세요.
 - `scripts\pyi_shim` 은 빌드할 때만 쓰는 보조 파일입니다. 아래 환경 메모를 보세요.
 
 ## 테스트

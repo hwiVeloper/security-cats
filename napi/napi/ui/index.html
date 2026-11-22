@@ -7,6 +7,12 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+<!-- 첫 화면이 그려질 때까지 보이는 로딩 표시. app.js가 첫 렌더 뒤에 없앤다. -->
+<div class="boot" id="boot" role="status">
+  <div class="boot-cat" id="boot-cat"></div>
+  <div class="boot-spin" aria-hidden="true"></div>
+  <p class="boot-text">불러오는 중…</p>
+</div>
 <div class="app" id="app">
   <aside class="side" id="side" aria-label="서비스 목록">
     <div class="logo" id="logo">napi</div>

@@ -860,7 +860,12 @@
   };
 
   root.pywebview = { api: mockApi, napiMock: true };
-  function ready() { setTimeout(function () { root.dispatchEvent(new Event("pywebviewready")); }, 0); }
+  // &boot=<ms>: 로딩 표시(#boot)를 눈으로 확인할 수 있게 pywebviewready를 그만큼 늦춘다.
+  var bootDelay = /[?&]boot=(\d+)(&|$)/.exec(root.location.search);
+  function ready() {
+    setTimeout(function () { root.dispatchEvent(new Event("pywebviewready")); },
+      bootDelay ? Math.min(Number(bootDelay[1]), 30000) : 0);
+  }
   if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", ready);
   else ready();
 })(window);
