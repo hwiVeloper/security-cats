@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import platform
 import sys
+import threading
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -22,8 +23,48 @@ _WEBVIEW2_CLIENTS = (
     "{65C35B14-6C1D-4122-AC46-7148CC9D6497}",  # canary
 )
 _WEBVIEW2_MIN = (86, 0, 622, 0)
+BACKGROUND = "#FBF7F2"  # app.css --bg. 페이지가 그려지기 전 흰 화면 대신 보이는 창 배경색
+SPLASH_TIMEOUT = 15.0  # 창이 loaded 를 못 알려도 로딩 화면은 이 시간(초) 뒤에 닫는다
 
 RegistryReader = Callable[[str, str, str], object]
+
+
+_splash_lock = threading.Lock()
+
+
+def splash(text: str | None = None, pct: int = 0, close: bool = False) -> None:
+    """exe 로딩 화면(PyInstaller 스플래시)의 진행률·문구 갱신 / 닫기. 절대 예외를 내지 않는다.
+
+    로딩 화면은 exe 압축 해제 전에 부트로더가 띄우고, 압축 해제 동안 0~75%를 채운다.
+    이후 단계는 "@<퍼센트>|<문구>" 형식으로 보내 75~100%를 채운다 (해석은 napi.spec 의 SPLASH_PROGRESS_TCL).
+    소스 실행(python -m napi)에는 pyi_splash 모듈이 없으므로 아무 것도 하지 않는다.
+    loaded 이벤트 스레드와 시간 초과 타이머가 함께 부를 수 있어서 잠금으로 순서를 지킨다.
+    """
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+    except Exception:
+        return
+    try:
+        with _splash_lock:
+            if not pyi_splash.is_alive():
+                return
+            if close:
+                pyi_splash.close()
+            elif text:
+                pyi_splash.update_text(f"@{int(pct)}|{text}")
+    except Exception:
+        pass
+
+
+def _close_splash() -> None:
+    splash(close=True)
+
+
+def _close_splash_later(delay: float = SPLASH_TIMEOUT) -> None:
+    """webview.start 가 GUI 루프를 시작한 뒤 부른다. loaded 가 오지 않아도 로딩 화면이 남지 않게 한다."""
+    timer = threading.Timer(delay, _close_splash)
+    timer.daemon = True  # 창을 먼저 닫아도 프로세스 종료를 붙잡지 않게
+    timer.start()
 
 
 def ui_index_path() -> Path:
@@ -72,7 +113,9 @@ def _message_box(text: str) -> None:
 
 
 def main() -> None:
+    splash("설정을 불러오는 중…", 78)
     if not webview2_available():
+        splash(close=True)  # 로딩 화면(항상 위)이 안내 창을 가리지 않게 먼저 닫는다
         _message_box(WEBVIEW2_MISSING)
         raise SystemExit(1)
 
@@ -81,13 +124,18 @@ def main() -> None:
     from napi.api import Api
 
     api = Api()
+    splash("화면을 준비하는 중…", 85)
     window = webview.create_window(TITLE, url=str(ui_index_path()), js_api=api,
-                                   width=1280, height=820, min_size=(1000, 640))
+                                   width=1280, height=820, min_size=(1000, 640),
+                                   background_color=BACKGROUND)
     # 창이 닫히면 진행 중인 스캔을 취소해서 프로세스가 원격 명령을 붙든 채 남지 않게 한다.
     window.events.closed += api._shutdown
+    # 페이지가 로드되면 로딩 화면을 닫는다. 첫 렌더 전까지는 index.html 의 로딩 표시가 이어받는다.
+    window.events.loaded += _close_splash
     try:
-        webview.start(gui="edgechromium")
+        webview.start(_close_splash_later, gui="edgechromium")
     except Exception as e:
+        splash(close=True)
         if sys.stderr is not None:  # PyInstaller windowed 빌드에서는 stderr가 없다
             traceback.print_exc()
         _message_box(f"napi를 시작하지 못했어요: {type(e).__name__}")

@@ -1069,22 +1069,51 @@ class FakeWebview:
         self.start_error = start_error
         self.created = []
         self.started = []
+        self.start_funcs = []
 
     def create_window(self, title, **kw):
         win = type("W", (), {})()
         win.events = type("E", (), {})()
         win.events.closed = self._Handlers()
+        win.events.loaded = self._Handlers()
         self.created.append((title, kw, win))
         return win
 
-    def start(self, **kw):
+    def start(self, func=None, **kw):
         self.started.append(kw)
+        self.start_funcs.append(func)
         if self.start_error:
             raise self.start_error
 
 
+class FakeSplash:
+    """PyInstaller가 exe 안에서만 제공하는 pyi_splash 모듈 흉내."""
+
+    def __init__(self, error=None):
+        self.alive = True
+        self.error = error
+        self.calls = []
+
+    def is_alive(self):
+        if self.error:
+            raise self.error
+        return self.alive
+
+    def update_text(self, text):
+        self.calls.append(("text", text))
+
+    def close(self):
+        self.calls.append(("close",))
+        self.alive = False
+
+
 @pytest.fixture
-def main_env(monkeypatch, tmp_path):
+def no_splash(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyi_splash", None)  # import 하면 ImportError
+
+
+@pytest.fixture
+def main_env(monkeypatch, tmp_path, no_splash):
     monkeypatch.setenv("NAPI_HOME", str(tmp_path))
     boxes = []
     monkeypatch.setattr(entry, "_message_box", boxes.append)
@@ -1125,7 +1154,10 @@ def test_main_opens_window_and_shuts_down(monkeypatch, main_env):
     assert kw["url"] == str(entry.ui_index_path())
     assert isinstance(kw["js_api"], Api)
     assert (kw["width"], kw["height"], kw["min_size"]) == (1280, 820, (1000, 640))
+    assert kw["background_color"] == "#FBF7F2"  # 흰 화면 대신 앱 배경색
     assert fake.started == [{"gui": "edgechromium"}]
+    assert fake.start_funcs == [entry._close_splash_later]  # 로딩 화면 시간 초과 닫기
+    assert win.events.loaded.items == [entry._close_splash]
     assert len(win.events.closed.items) == 1
     assert shutdowns == [kw["js_api"]]
     assert boxes == []
@@ -1142,6 +1174,75 @@ def test_main_start_failure_shows_generic_message(monkeypatch, main_env, capsys)
     assert boxes == ["napi를 시작하지 못했어요: RuntimeError"]
     assert "boom detail" in capsys.readouterr().err  # traceback은 stderr로
     assert len(shutdowns) == 1
+
+
+# ---------------------------------------------------------------- splash
+
+
+def test_splash_is_noop_without_pyi_splash(no_splash):
+    entry.splash("설정을 불러오는 중…", 78)
+    entry.splash(close=True)
+    entry._close_splash()
+
+
+def test_splash_updates_text_and_closes(monkeypatch):
+    fake = FakeSplash()
+    monkeypatch.setitem(sys.modules, "pyi_splash", fake)
+    entry.splash("화면을 준비하는 중…", 85.7)
+    entry.splash()  # 문구가 없으면 보내지 않는다
+    entry.splash(close=True)
+    entry.splash("늦은 갱신", 90)  # 닫힌 뒤에는 아무 것도 하지 않는다
+    entry._close_splash()
+    assert fake.calls == [("text", "@85|화면을 준비하는 중…"), ("close",)]
+
+
+def test_splash_swallows_errors(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyi_splash", FakeSplash(error=RuntimeError("pipe broken")))
+    entry.splash("설정을 불러오는 중…", 78)
+    entry.splash(close=True)
+
+
+def test_close_splash_later_uses_daemon_timer(monkeypatch):
+    fake = FakeSplash()
+    monkeypatch.setitem(sys.modules, "pyi_splash", fake)
+    started = []
+    real_timer = threading.Timer
+
+    def spy_timer(delay, fn):
+        t = real_timer(delay, fn)
+        started.append(t)
+        return t
+
+    monkeypatch.setattr(entry.threading, "Timer", spy_timer)
+    entry._close_splash_later(0.01)
+    assert entry.SPLASH_TIMEOUT == 15.0
+    (t,) = started
+    assert t.daemon
+    t.join(5)
+    assert fake.calls == [("close",)]
+
+
+def test_main_reports_splash_stages(monkeypatch, main_env):
+    fake_splash = FakeSplash()
+    monkeypatch.setitem(sys.modules, "pyi_splash", fake_splash)
+    monkeypatch.setitem(sys.modules, "webview", FakeWebview())
+    monkeypatch.setattr(entry, "webview2_available", lambda: True)
+    entry.main()
+    assert fake_splash.calls == [("text", "@78|설정을 불러오는 중…"), ("text", "@85|화면을 준비하는 중…")]
+
+
+@pytest.mark.parametrize("webview2, start_error", [(False, None), (True, RuntimeError("boom"))])
+def test_main_closes_splash_before_message_box(monkeypatch, main_env, webview2, start_error):
+    boxes, _ = main_env
+    fake_splash = FakeSplash()
+    monkeypatch.setitem(sys.modules, "pyi_splash", fake_splash)
+    monkeypatch.setitem(sys.modules, "webview", FakeWebview(start_error=start_error))
+    monkeypatch.setattr(entry, "webview2_available", lambda: webview2)
+    monkeypatch.setattr(entry, "_message_box", lambda text: boxes.append((text, fake_splash.alive)))
+    with pytest.raises(SystemExit):
+        entry.main()
+    assert fake_splash.calls[-1] == ("close",)
+    assert [alive for _, alive in boxes] == [False]  # 안내 창이 뜰 때 로딩 화면은 이미 닫혀 있다
 
 
 # pywebview는 Python 매개변수 이름을 그대로 써서 JS 함수를 만든다 (new Function(params, body)).
