@@ -211,8 +211,15 @@ def test_default_probe_patterns_exact():
     assert DEFAULT_PROBE_PATTERNS == [
         "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
         "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
-        "**/phpmyadmin*", "/cgi-bin/**",
+        "**/phpmyadmin*", "/cgi-bin/**", "**/.*/**", "**/wp-*/**", "**/phpmyadmin*/**",
     ]
+
+
+@pytest.mark.parametrize("path", ["/.git/config", "/blog/wp-admin/x", "/v1/.well-known/x",
+                                  "/phpMyAdmin2/setup/x"])
+def test_scanner_directories_anywhere_in_path(path):
+    a = _one(path, {"2xx": 1})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "scanner")
 
 
 def test_scanner_pattern_beats_2xx():

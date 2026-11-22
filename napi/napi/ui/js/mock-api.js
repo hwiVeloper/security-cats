@@ -35,7 +35,7 @@
   var DEFAULT_PROBE_PATTERNS = [
     "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
     "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
-    "**/phpmyadmin*", "/cgi-bin/**"
+    "**/phpmyadmin*", "/cgi-bin/**", "**/.*/**", "**/wp-*/**", "**/phpmyadmin*/**"
   ];
   var SERVERS = ["WAS-01", "WAS-02", "WAS-03"];
 

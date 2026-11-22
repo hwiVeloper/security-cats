@@ -20,6 +20,8 @@ DEFAULT_PROBE_PATTERNS: list[str] = [
     "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
     "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
     "**/phpmyadmin*", "/cgi-bin/**",
+    # 숨김·스캐너 폴더는 경로 중간에 있어도 잡는다 (예: /.git/config, /blog/wp-admin/x)
+    "**/.*/**", "**/wp-*/**", "**/phpmyadmin*/**",
 ]
 
 _FILE_ERROR_CODES = {"unreadable", "decompress_failed"}
