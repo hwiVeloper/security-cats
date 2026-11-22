@@ -18,7 +18,7 @@ from datetime import date
 from pathlib import Path
 
 from napi import paths
-from napi.classifier import window_bounds
+from napi.classifier import DEFAULT_PROBE_PATTERNS, window_bounds
 from napi.collector import Collector
 from napi.config import ConfigError, _from_dict, load_config, save_config, validate_config
 from napi.logformat import test_format as _test_format
@@ -215,7 +215,8 @@ class Api:
             results[svc.name] = (None if r is None
                                  else {"sleeping": r.sleeping, "scanned_at": r.scanned_at})
         return {"config": asdict(cfg), "config_path": str(self._config_path),
-                "results": results, "error": error}
+                "results": results, "error": error,
+                "default_probe_patterns": list(DEFAULT_PROBE_PATTERNS)}
 
     @_safe
     def save_config(self, config: dict) -> dict:

@@ -2,7 +2,9 @@ from datetime import date
 
 import pytest
 
-from napi.classifier import classify, probe_rest, summary_sentence, window_bounds
+from napi.classifier import (
+    DEFAULT_PROBE_PATTERNS, classify, probe_rest, summary_sentence, window_bounds,
+)
 from napi.matcher import MatchedStats, MatchResult
 from napi.models import (
     FileStat, Note, ServerScanResult, ServiceConfig, SpecOperation, SpecSource, Status,
@@ -54,11 +56,11 @@ def test_status_rules(dep, st, expected):
 
 
 def test_ghost_vs_probe_and_order():
-    un = {("GET", "/z"): stats(6, "20261101", {"2xx": 1, "4xx": 5}),
-          ("GET", "/b"): stats(9, "20261101", {"4xx": 9})}
+    un = {("GET", "/a/z"): stats(6, "20261101", {"2xx": 1, "4xx": 5}),
+          ("GET", "/a/b"): stats(9, "20261101", {"4xx": 9})}
     apis, _, counts, *_ = run([op()], {"GET /a": stats(1, "20261110")}, unmatched=un)
     assert [(a.path, a.status) for a in apis] == [
-        ("/a", Status.AWAKE), ("/b", Status.PROBE), ("/z", Status.GHOST)]
+        ("/a", Status.AWAKE), ("/a/b", Status.PROBE), ("/a/z", Status.GHOST)]
     assert apis[1].in_spec is False and apis[1].tags == [] and not apis[1].deprecated
     assert counts["ghost"] == 1 and counts["probe"] == 1 and counts["rip"] == 0
     assert set(counts) == {s.value for s in Status}
@@ -188,3 +190,119 @@ def test_reliability_invalid_oldest_date_does_not_raise(oldest):
     assert r.level == "low"
     assert r.reasons == [f"A의 로그 날짜 {oldest}를 읽을 수 없어요 — 로그 형식 설정을 확인해 주세요"]
     assert r.coverage_days > 300  # 읽을 수 없는 서버는 기간 계산에서 뺀다
+
+
+# ------------------------------------------------ 유령 / 외부 탐색 구분 (API 범위 + 스캐너 패턴)
+
+
+def _un(path, by_status, method="GET"):
+    calls = sum(by_status.values())
+    return {(method, path): MatchedStats(calls=calls, first="20261101", last="20261101",
+                                         by_status=by_status)}
+
+
+def _one(path, by_status, ops=None, c=None):
+    ops = ops if ops is not None else [op("/v1/users/{id}")]
+    apis, *_ = run(ops, {o.key: stats() for o in ops}, c=c, unmatched=_un(path, by_status))
+    return next(a for a in apis if not a.in_spec)
+
+
+def test_default_probe_patterns_exact():
+    assert DEFAULT_PROBE_PATTERNS == [
+        "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
+        "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
+        "**/phpmyadmin*", "/cgi-bin/**",
+    ]
+
+
+def test_scanner_pattern_beats_2xx():
+    a = _one("/v1/.env", {"2xx": 3})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "scanner")
+    a = _one("/.env", {"2xx": 3})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "scanner")
+
+
+@pytest.mark.parametrize("path", ["/v1/config.YML", "/v1/Wp-Login.PHP", "/CGI-BIN/x",
+                                  "/v1/a/b/.DS_Store", "/v1/phpMyAdmin2"])
+def test_scanner_pattern_case_insensitive(path):
+    a = _one(path, {"2xx": 1})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "scanner")
+
+
+def test_jsp_and_do_not_default_scanner():
+    assert _one("/v1/a.jsp", {"2xx": 1}).status == Status.GHOST
+    assert _one("/v1/a.do", {"5xx": 1}).status == Status.GHOST
+
+
+def test_out_of_scope_redirect_is_probe():
+    a = _one("/admin/login", {"3xx": 4})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+
+
+def test_in_scope_unmatched_5xx_is_ghost():
+    a = _one("/v1/orders", {"5xx": 2})
+    assert (a.status, a.probe_reason) == (Status.GHOST, None)
+
+
+def test_in_scope_4xx_only_is_probe():
+    a = _one("/v1/orders", {"4xx": 2})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "4xx_only")
+
+
+def test_param_first_segment_means_unrestricted_scope():
+    ops = [op("/v1/users"), op("/{tenant}/items")]
+    a = _one("/admin/login", {"3xx": 1}, ops=ops)
+    assert (a.status, a.probe_reason) == (Status.GHOST, None)
+
+
+def test_no_ops_means_unrestricted_scope():
+    a = _one("/anything", {"2xx": 1}, ops=[])
+    assert (a.status, a.probe_reason) == (Status.GHOST, None)
+
+
+def test_excluded_ops_do_not_widen_scope():
+    ops = [op("/v1/a"), op("/admin/x")]
+    m = MatchResult(per_op={"GET /v1/a": stats()}, unmatched=_un("/admin/y", {"2xx": 1}),
+                    excluded_ops={"GET /admin/x"})
+    apis, *_ = classify(ops, m, [server()], cfg(), "365", TODAY)
+    a = next(a for a in apis if not a.in_spec)
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+
+
+def test_user_api_scopes_segment_boundary():
+    c = cfg()
+    c.api_scopes = ["/legacy", "/internal/api"]
+    assert _one("/legacy", {"2xx": 1}, c=c).status == Status.GHOST
+    assert _one("/legacy/x", {"2xx": 1}, c=c).status == Status.GHOST
+    assert _one("/internal/api/y", {"2xx": 1}, c=c).status == Status.GHOST
+    a = _one("/legacyx", {"2xx": 1}, c=c)
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+    a = _one("/internal/other", {"2xx": 1}, c=c)
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+
+
+def test_empty_probe_patterns_disable_defaults():
+    c = cfg()
+    c.probe_patterns = []
+    a = _one("/v1/.env", {"2xx": 1}, c=c)
+    assert (a.status, a.probe_reason) == (Status.GHOST, None)
+
+
+def test_custom_probe_patterns_replace_defaults():
+    c = cfg()
+    c.probe_patterns = ["/v1/debug/**"]
+    assert _one("/v1/debug/vars", {"2xx": 1}, c=c).probe_reason == "scanner"
+    assert _one("/v1/x.php", {"2xx": 1}, c=c).status == Status.GHOST
+
+
+def test_statusless_unmatched_by_scope():
+    a = _one("/v1/orders", {"???": 1})
+    assert (a.status, a.probe_reason) == (Status.GHOST, None)
+    a = _one("/admin", {"???": 1})
+    assert (a.status, a.probe_reason) == (Status.PROBE, "out_of_scope")
+
+
+def test_spec_ops_never_get_probe_reason():
+    ops = [op("/v1/.env")]
+    apis, *_ = run(ops, {"GET /v1/.env": stats(3, "20261110")})
+    assert (apis[0].status, apis[0].probe_reason) == (Status.AWAKE, None)

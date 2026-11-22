@@ -517,3 +517,80 @@ def test_validate_rejects_wildcard_in_first_segment():
     errs = _glob_errs("/*/logs/a.log")
     assert len(errs) == 1 and "최상위" in errs[0] and "/*/logs/a.log" in errs[0]
     assert _glob_errs("/a*") == []  # 디렉터리 없이 파일 이름만이면 괜찮다
+
+
+# ------------------------------------------------ api_scopes / probe_patterns
+
+
+def test_scope_fields_roundtrip(tmp_path):
+    p = tmp_path / "c.yaml"
+    cfg = AppConfig(services=[make_service(api_scopes=["/legacy", "/internal/api"],
+                                           probe_patterns=["**/*.php", "/cgi-bin/**"])])
+    save_config(cfg, p)
+    assert load_config(p) == cfg
+    cfg.services[0].probe_patterns = []
+    save_config(cfg, p)
+    assert load_config(p).services[0].probe_patterns == []
+
+
+def test_old_config_without_scope_fields(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "services:\n- name: a\n  spec: {location: x}\n  servers:\n"
+        "  - {name: s, host: h, user: u, log_glob: /a/b}\n",
+        encoding="utf-8",
+    )
+    svc = load_config(p).services[0]
+    assert svc.api_scopes == [] and svc.probe_patterns is None
+
+
+def test_probe_patterns_none_not_written(tmp_path):
+    p = tmp_path / "c.yaml"
+    save_config(AppConfig(services=[make_service()]), p)
+    text = p.read_text(encoding="utf-8")
+    assert "api_scopes: []" in text
+    assert "probe_patterns" not in text
+    assert load_config(p).services[0].probe_patterns is None
+
+
+def test_scope_fields_scalars_become_strings(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "services:\n- name: a\n  spec: {location: x}\n  servers: []\n"
+        "  api_scopes: /legacy\n  probe_patterns: [123]\n",
+        encoding="utf-8",
+    )
+    svc = load_config(p).services[0]
+    assert svc.api_scopes == ["/legacy"] and svc.probe_patterns == ["123"]
+
+
+@pytest.mark.parametrize("body", ["api_scopes: {a: 1}", "probe_patterns: {a: 1}"])
+def test_bad_scope_fields_raise_config_error(tmp_path, body):
+    p = tmp_path / "c.yaml"
+    p.write_text("services:\n- name: a\n  spec: {location: x}\n  servers: []\n  " + body + "\n",
+                 encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+@pytest.mark.parametrize("scope", ["legacy", "/a*", "/a/**", "/a?b", "/a//b", "", "/a\nb"])
+def test_validate_rejects_bad_api_scopes(scope):
+    errs = _errs(lambda s: setattr(s, "api_scopes", [scope]))
+    assert len(errs) == 1 and "API 범위" in errs[0]
+
+
+@pytest.mark.parametrize("scope", ["/legacy", "/internal/api", "/v2/"])
+def test_validate_accepts_api_scopes(scope):
+    assert _errs(lambda s: setattr(s, "api_scopes", [scope])) == []
+
+
+@pytest.mark.parametrize("pat", ["", "   ", "**/*.php\t", "/a\nb", "\x00"])
+def test_validate_rejects_bad_probe_patterns(pat):
+    errs = _errs(lambda s: setattr(s, "probe_patterns", [pat]))
+    assert len(errs) == 1 and "스캐너 패턴" in errs[0]
+
+
+def test_validate_accepts_probe_patterns():
+    assert _errs(lambda s: setattr(s, "probe_patterns", ["**/.*", "/cgi-bin/**"])) == []
+    assert _errs(lambda s: setattr(s, "probe_patterns", [])) == []
+    assert _errs(lambda s: setattr(s, "probe_patterns", None)) == []

@@ -11,6 +11,7 @@ import pytest
 
 from napi import __main__ as entry
 from napi.api import Api
+from napi.classifier import DEFAULT_PROBE_PATTERNS
 from napi.config import load_config, save_config
 from napi.models import (
     AggRow, AppConfig, CustomFormat, FileStat, LogFormatDef, LogPath, Note, ServerConfig, ServerScanResult,
@@ -186,6 +187,29 @@ def test_hand_edited_unquoted_note_date_keeps_app_working(env):
     assert p["phase"] == "done"  # save_result의 json.dump가 date 때문에 죽지 않는다
     by = {a["path"]: a for a in api.get_result(SVC)["apis"]}
     assert by["/v1/b"]["note"]["date"] == "2026-11-19"
+
+
+def test_get_state_exposes_default_probe_patterns(env):
+    st = env["api"].get_state()
+    assert st["default_probe_patterns"] == DEFAULT_PROBE_PATTERNS
+    assert st["default_probe_patterns"] is not DEFAULT_PROBE_PATTERNS
+    svc = st["config"]["services"][0]
+    assert svc["api_scopes"] == [] and svc["probe_patterns"] is None
+    env["path"].write_text("services: [1, 2", encoding="utf-8")
+    assert env["api"].get_state()["default_probe_patterns"] == DEFAULT_PROBE_PATTERNS
+
+
+def test_save_config_scope_fields(env):
+    api = env["api"]
+    cfg = api.get_state()["config"]
+    cfg["services"][0]["api_scopes"] = ["/legacy"]
+    cfg["services"][0]["probe_patterns"] = ["**/*.php"]
+    assert api.save_config(cfg) == {"ok": True, "errors": []}
+    svc = load_config(env["path"]).services[0]
+    assert svc.api_scopes == ["/legacy"] and svc.probe_patterns == ["**/*.php"]
+    cfg["services"][0]["api_scopes"] = ["legacy*"]
+    res = api.save_config(cfg)
+    assert res["ok"] is False and "API 범위" in res["errors"][0]
 
 
 def test_get_state_reports_broken_config(env):

@@ -79,6 +79,10 @@ class ServiceConfig:
     thresholds: Thresholds = field(default_factory=Thresholds)
     exclude_paths: list[str] = field(default_factory=list)
     notes: dict[str, Note] = field(default_factory=dict)  # 키: "GET /v1/x"
+    # 명세 경로의 맨 앞 조각 말고도 API로 볼 경로 접두사 (예: "/legacy", "/internal/api")
+    api_scopes: list[str] = field(default_factory=list)
+    # 명세 밖 경로 중 "외부 탐색 시도"로 볼 패턴. None이면 classifier.DEFAULT_PROBE_PATTERNS
+    probe_patterns: list[str] | None = None
 
 
 @dataclass
@@ -192,6 +196,8 @@ class ApiResult:
     summary: str | None = None
     operation_id: str | None = None
     note: Note | None = None
+    # 외부 탐색 시도(PROBE)로 분류한 이유: "scanner" | "out_of_scope" | "4xx_only" (그 밖에는 None)
+    probe_reason: str | None = None
 
 
 @dataclass

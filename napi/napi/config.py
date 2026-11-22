@@ -24,7 +24,12 @@ class ConfigError(Exception):
 
 def _to_dict(cfg: AppConfig) -> dict:
     # asdict는 중첩 dataclass와 None 값(custom_format, key_file)을 키째 유지한다.
-    return asdict(cfg)
+    d = asdict(cfg)
+    for s in d["services"]:
+        # None(기본 패턴)은 쓰지 않는다: 기본값이 바뀌면 그대로 따라가게
+        if s.get("probe_patterns") is None:
+            s.pop("probe_patterns", None)
+    return d
 
 
 _INT_RE = re.compile(r"[+-]?[0-9]+")
@@ -156,6 +161,9 @@ def _from_dict(d: dict) -> AppConfig:
                 exclude_paths=[_str(x) for x in (s.get("exclude_paths") or [])],
                 notes={_str(k): Note(**_fields(v, strs=("reason", "author", "date")))
                        for k, v in (s.get("notes") or {}).items()},
+                api_scopes=[_str(x) for x in _as_list(s.get("api_scopes"), "api_scopes")],
+                probe_patterns=(None if s.get("probe_patterns") is None else
+                                [_str(x) for x in _as_list(s["probe_patterns"], "probe_patterns")]),
             ))
         return AppConfig(
             services=services,
@@ -249,6 +257,7 @@ def validate_config(cfg: AppConfig) -> list[str]:
         for th in ("awake_days", "min_coverage_days"):
             if _below(getattr(svc.thresholds, th), 1):
                 errors.append(f"{label}: 기준값 {th}은(는) 1 이상의 정수여야 합니다.")
+        errors += _scope_problems(svc, label)
         for sv in svc.servers:
             sl = f"{label} / 서버 '{sv.name}'"
             if not sv.host.strip():
@@ -268,6 +277,20 @@ def validate_config(cfg: AppConfig) -> list[str]:
                     errors.append(f"{pl}: 모르는 로그 형식이에요: {lp.log_format}")
                 elif lp.log_format == "custom" and lp.custom_format is None:
                     errors.append(f"{pl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
+    return errors
+
+
+def _scope_problems(svc: ServiceConfig, label: str) -> list[str]:
+    """API 범위 접두사와 스캐너 패턴 검사. napi/ui/js/settings.js의 같은 이름 규칙과 맞춘다."""
+    errors: list[str] = []
+    for scope in svc.api_scopes:
+        if (not scope.startswith("/") or _GLOB_CONTROL_RE.search(scope)
+                or "*" in scope or "?" in scope or "//" in scope):
+            errors.append(f"{label}: API 범위는 '/'로 시작하고 * ? // 와 제어 문자가 없어야 해요:"
+                          f" {scope!r}")
+    for pat in svc.probe_patterns or []:
+        if not pat.strip() or _GLOB_CONTROL_RE.search(pat):
+            errors.append(f"{label}: 스캐너 패턴은 비어 있거나 제어 문자를 담을 수 없어요: {pat!r}")
     return errors
 
 

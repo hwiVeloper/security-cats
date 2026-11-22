@@ -122,3 +122,17 @@ def test_thresholds_roundtrip():
     d = result_to_dict(r)
     assert (d["awake_days"], d["min_coverage_days"]) == (14, 60)
     assert result_from_dict(d) == r
+
+
+def test_probe_reason_roundtrip_and_old_result_loads(tmp_path):
+    r = make_result()
+    r.apis.append(ApiResult("GET", "/.env", Status.PROBE, 1, "20261001", "20261001",
+                            {"2xx": 1}, {"WAS-01": 1}, False, probe_reason="scanner"))
+    d = result_to_dict(r)
+    assert d["apis"][-1]["probe_reason"] == "scanner"
+    assert result_from_dict(d) == r
+    for a in d["apis"]:
+        del a["probe_reason"]
+    (tmp_path / "old.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    old = load_result("old", tmp_path)
+    assert old is not None and all(a.probe_reason is None for a in old.apis)

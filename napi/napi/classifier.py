@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from napi.matcher import MatchedStats, MatchResult
+from napi.matcher import MatchedStats, MatchResult, _glob, _is_param, _norm, _segments
 from napi.models import (
     ApiResult,
     Reliability,
@@ -12,6 +12,15 @@ from napi.models import (
     SpecOperation,
     Status,
 )
+
+# 명세 밖 경로 중 응답과 관계없이 "외부 탐색 시도"로 볼 경로 (스캐너가 흔히 찔러 보는 것).
+# 조각 단위 glob: `*`는 한 조각 안, `**`는 0개 이상의 조각. 대소문자는 가리지 않는다.
+# .jsp / .do는 일부러 넣지 않았다 (JEUS·Spring 앱이 실제로 쓴다).
+DEFAULT_PROBE_PATTERNS: list[str] = [
+    "**/.*", "**/*.yml", "**/*.yaml", "**/*.env", "**/*.ini", "**/*.bak", "**/*.old",
+    "**/*.sql", "**/*.php", "**/*.asp", "**/*.aspx", "**/*.cgi", "**/wp-*",
+    "**/phpmyadmin*", "/cgi-bin/**",
+]
 
 _FILE_ERROR_CODES = {"unreadable", "decompress_failed"}
 _PARSE_FAIL_RATIO = 0.2  # 이 비율 이상 읽지 못하면 로그 형식 설정을 의심한다
@@ -109,6 +118,47 @@ def _reliability(
     return Reliability("low" if reasons else "ok", coverage, reasons)
 
 
+def _api_scope(ops: list[SpecOperation], excluded: set[str]) -> set[str] | None:
+    """제외되지 않은 명세 경로(쓰인 그대로)의 맨 앞 조각 집합. None이면 범위 제한 없음
+    (명세에 오퍼레이션이 없거나 맨 앞 조각이 `{param}`인 경로가 있을 때)."""
+    firsts: set[str] = set()
+    for op in ops:
+        if op.key in excluded:
+            continue
+        segs = _segments(_norm(op.path))
+        if not segs or _is_param(segs[0]):
+            return None
+        firsts.add(segs[0])
+    return firsts or None
+
+
+def _in_scope(path: str, scope: set[str] | None, prefixes: list[str]) -> bool:
+    if scope is None:
+        return True
+    segs = _segments(path)
+    if segs and segs[0] in scope:
+        return True
+    for p in prefixes:
+        p = _norm(p)
+        if path == p or path.startswith(p.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _probe_reason(path: str, by_status: dict[str, int], patterns: list[list[str]],
+                  scope: set[str] | None, prefixes: list[str]) -> str | None:
+    """명세 밖 경로가 외부 탐색 시도면 그 이유, 유령이면 None.
+    path는 match.unmatched의 키 (path_mapping을 적용한 경로)다."""
+    segs = _segments(path.lower())
+    if any(_glob(p, segs) for p in patterns):
+        return "scanner"
+    if not _in_scope(path, scope, prefixes):
+        return "out_of_scope"
+    if all(k == "4xx" for k in by_status):
+        return "4xx_only"
+    return None
+
+
 def classify(
     ops: list[SpecOperation],
     match: MatchResult,
@@ -133,16 +183,20 @@ def classify(
             summary=op.summary, operation_id=op.operation_id,
             note=cfg.notes.get(op.key),
         ))
+    scope = _api_scope(ops, match.excluded_ops)
+    raw_patterns = DEFAULT_PROBE_PATTERNS if cfg.probe_patterns is None else cfg.probe_patterns
+    patterns = [_segments(p.lower()) for p in raw_patterns]
     for (method, path), st in sorted(
         match.unmatched.items(), key=lambda kv: (kv[0][1], kv[0][0])
     ):
-        ghost = any(k != "4xx" for k in st.by_status)
+        reason = _probe_reason(path, st.by_status, patterns, scope, cfg.api_scopes)
         apis.append(ApiResult(
             method=method, path=path,
-            status=Status.GHOST if ghost else Status.PROBE,
+            status=Status.GHOST if reason is None else Status.PROBE,
             calls=st.calls, first=st.first, last=st.last,
             by_status=dict(st.by_status), by_server=dict(st.by_server),
             in_spec=False, note=cfg.notes.get(f"{method} {path}"),
+            probe_reason=reason,
         ))
 
     counts = {s.value: 0 for s in Status}
