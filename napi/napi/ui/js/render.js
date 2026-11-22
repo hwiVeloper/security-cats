@@ -15,7 +15,38 @@
     ghost: { label: "유령", color: "#0ea5b7", desc: "명세에 없는데 호출되고 있어요" },
     probe: { label: "외부 탐색 시도", color: "#8a7a6e", desc: "명세에 없는 경로로 404만 났어요. 외부에서 찔러 본 요청으로 보여요" }
   };
+  /* 상태 설명 (도움말 대화상자, 탭 아래 한 줄, 리포트 표지가 같이 쓴다).
+   * criteria(n): n = 최근 기준 일수 (awake_days). 모르면 null → "최근 기준 기간(기본 30일)". */
+  var RECENT_UNKNOWN = "최근 기준 기간(기본 30일)";
+  var HELP = {
+    awake: { mean: "지금도 쓰이는 API", action: "유지",
+      criteria: function (n) { return (n ? "최근 " + n + "일" : RECENT_UNKNOWN) + " 안에 호출 기록이 있어요"; } },
+    drowsy: { mean: "쓰이긴 했지만 요즘 뜸한 API", action: "사용처 확인",
+      criteria: function (n) { return "분석 기간 안에 호출은 있지만, 마지막 호출이 " + (n ? n + "일" : RECENT_UNKNOWN) + "보다 오래됐어요"; } },
+    asleep: { mean: "아무도 부르지 않는 API", action: "삭제 검토 (연 1회 배치처럼 드물게 쓰이면 메모로 유지 사유를 남겨 주세요)",
+      criteria: function () { return "분석 기간 동안 호출이 한 번도 없어요"; } },
+    rip: { mean: "이미 은퇴한 API", action: "바로 삭제 후보",
+      criteria: function () { return "명세에 deprecated 표시가 있고, 호출도 없어요"; } },
+    sleeptalk: { mean: "은퇴했는데 아직 불리는 API", action: "호출하는 쪽을 새 API로 옮긴 뒤 삭제",
+      criteria: function () { return "명세에 deprecated 표시가 있는데, 아직 호출되고 있어요"; } },
+    ghost: { mean: "명세에 없는 API", action: "명세에 추가하거나 차단 검토",
+      criteria: function () { return "명세에 없는 경로인데 로그에 호출 기록이 있어요 (4xx 외 응답 포함)"; } },
+    probe: { mean: "밖에서 찔러 본 요청", action: "판정 대상 아님 (참고용)",
+      criteria: function () { return "명세에 없는 경로로 4xx(주로 404)만 받았어요. 스캐너나 봇으로 보여요"; } }
+  };
+  Object.keys(HELP).forEach(function (k) {
+    STATUS_META[k].mean = HELP[k].mean;
+    STATUS_META[k].criteria = HELP[k].criteria;
+    STATUS_META[k].action = HELP[k].action;
+  });
+  var HELP_NOTES = [
+    "분석 기간: 스캔할 때 고른 기간(90일·180일·1년·전체)과 서버에 남아 있는 로그 중 짧은 쪽이에요.",
+    "응답 분포의 '상태 미상'은 상태코드가 없는 로그 형식(예: webtob_error)에서 온 호출이에요."
+  ];
+  var ALL_LINE = "모든 상태를 함께 보여 줘요. 상태가 헷갈리면 '? 상태 설명'을 눌러 보세요";
+  var HELP_LABEL = "? 상태 설명";
   var DONUT_ORDER = ["awake", "drowsy", "asleep", "rip", "sleeptalk", "ghost"];
+  var HELP_ORDER = DONUT_ORDER.concat(["probe"]);
   var STATUS_ORDER = ["asleep", "rip", "sleeptalk", "ghost", "drowsy", "awake", "probe"];
   var TAB_ORDER = ["all"].concat(STATUS_ORDER);
   // "???" = 상태 코드가 없는 형식으로 읽은 호출 (classifier가 상태 미상으로 집계한다)
@@ -287,22 +318,79 @@
     return { actions: actions, mascot: mascot };
   }
 
+  // ------------------------------------------------------------ status help
+
+  /* 최근 기준 일수. 숫자, {awake_days}, 결과 객체 모두 받는다. 모르면 null. */
+  function awakeDays(th) {
+    var v = th !== null && typeof th === "object" ? th.awake_days : th;
+    var n = Number(v);
+    return v !== null && v !== undefined && v !== "" && isFinite(n) && n > 0 && Math.floor(n) === n ? n : null;
+  }
+
+  /* 탭 title용: "<뜻>. <판정 기준>" */
+  function statusTip(status, th) {
+    var m = STATUS_META[status];
+    return m ? m.mean + ". " + m.criteria(awakeDays(th)) : "";
+  }
+
+  /* 탭 아래 한 줄: "<label> — <뜻>. <판정 기준>. 권고: <권고>" (전체 탭은 안내 문장) */
+  function statusLineText(status, th) {
+    var m = STATUS_META[status];
+    if (!m) return ALL_LINE;
+    return m.label + " — " + m.mean + ". " + m.criteria(awakeDays(th)) + ". 권고: " + m.action;
+  }
+
+  function renderStatusLine(container, status, th) {
+    clear(container);
+    container.classList.add("tab-line");
+    container.setAttribute("aria-live", "polite");
+    if (STATUS_META[status]) container.appendChild(face(status, "ico-face"));
+    container.appendChild(el("span", null, statusLineText(status, th)));
+  }
+
+  /* 상태 설명 표 + 각주. 도움말 대화상자와 리포트 표지가 같이 쓴다. */
+  function statusHelpTable(th) {
+    var n = awakeDays(th);
+    var head = el("tr", null, ["상태", "뜻", "판정 기준", "권고"].map(function (t) { return el("th", { scope: "col" }, t); }));
+    var rows = HELP_ORDER.map(function (k) {
+      var m = STATUS_META[k];
+      return el("tr", { "data-status": k },
+        el("th", { scope: "row", class: "c-st" }, statusPill(k)),
+        el("td", null, m.mean),
+        el("td", null, m.criteria(n)),
+        el("td", null, m.action));
+    });
+    return el("div", { class: "status-help" },
+      el("table", { class: "help-table" }, el("thead", null, head), el("tbody", null, rows)),
+      el("ul", { class: "help-notes" }, HELP_NOTES.map(function (t) { return el("li", null, t); })));
+  }
+
   // ------------------------------------------------------------ tabs
 
-  function renderTabs(container, counts, active, onChange) {
+  /* opts: { thresholds: awake_days 또는 결과 객체, onHelp: "? 상태 설명" 버튼을 누를 때 } */
+  function renderTabs(container, counts, active, onChange, opts) {
+    opts = opts || {};
     clear(container);
     container.classList.add("tabs");
-    container.setAttribute("role", "tablist");
+    container.removeAttribute("role");
+    var list = el("div", { class: "tab-list", role: "tablist", "aria-label": "상태" });
+    container.appendChild(list);
     TAB_ORDER.forEach(function (key) {
       var n = countOf(counts, key);
       var label = key === "all" ? "전체 " + fmtNum(n) : STATUS_META[key].label + " " + fmtNum(n);
       var on = key === active;
-      container.appendChild(el("button", {
+      list.appendChild(el("button", {
         type: "button", class: "tab" + (on ? " on" : ""), role: "tab", "aria-selected": on ? "true" : "false",
-        "data-status": key,
+        "data-status": key, title: key === "all" ? null : statusTip(key, opts.thresholds),
         onclick: function () { if (onChange) onChange(key); }
       }, key === "all" ? null : face(key, "ico-face"), label));
     });
+    if (opts.onHelp) {
+      container.appendChild(el("button", {
+        type: "button", class: "tab-help", "aria-haspopup": "dialog",
+        onclick: function () { opts.onHelp(); }
+      }, HELP_LABEL));
+    }
   }
 
   // ------------------------------------------------------------ table
@@ -537,6 +625,8 @@
     rootEl.appendChild(hero);
     renderSummary(hero, result, { print: print });
     rootEl.appendChild(renderServers(result));
+    rootEl.appendChild(el("section", { class: "report-help" },
+      el("h2", null, "상태 설명"), statusHelpTable(result)));
 
     var apis = result.apis || [];
     var counts = result.counts || {};
@@ -555,11 +645,14 @@
     }
     var state = { status: defaultTab(counts), readOnly: true, probeRest: result.probe_rest, sort: null };
     var tabs = el("div");
+    var line = el("p");
     var body = el("div", { class: "main" });
     rootEl.appendChild(tabs);
+    rootEl.appendChild(line);
     rootEl.appendChild(body);
     function draw() {
-      renderTabs(tabs, counts, state.status, function (k) { state.status = k; draw(); });
+      renderTabs(tabs, counts, state.status, function (k) { state.status = k; draw(); }, { thresholds: result });
+      renderStatusLine(line, state.status, result);
       renderTable(body, apis, state, null);
     }
     draw();
@@ -572,6 +665,11 @@
     renderSummary: renderSummary,
     renderDonut: renderDonut,
     renderTabs: renderTabs,
+    renderStatusLine: renderStatusLine,
+    statusHelpTable: statusHelpTable,
+    statusLineText: statusLineText,
+    statusTip: statusTip,
+    awakeDays: awakeDays,
     renderTable: renderTable,
     renderDetail: renderDetail,
     renderReport: renderReport,

@@ -67,7 +67,12 @@ button,input,select,textarea{font-family:inherit;color:inherit}
 .empty-state p{margin:0;color:var(--muted)}
 
 /* ===== tabs ===== */
-.tabs{display:flex;flex-wrap:wrap;gap:4px;padding:10px 20px 0;border-bottom:1px solid var(--line)}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;align-items:flex-end;padding:10px 20px 0;border-bottom:1px solid var(--line)}
+.tab-list{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.tab-help{margin:0 0 5px auto;border:1px solid var(--line);background:#fff;border-radius:999px;padding:3px 11px;font-size:12px;color:#b8621a;cursor:pointer;white-space:nowrap}
+.tab-help:hover{border-color:#f5c896;background:var(--accent-soft)}
+.tab-line{display:flex;align-items:center;gap:6px;margin:0;padding:8px 20px 0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.tab-line .ico-face{width:16px;height:16px}
 .tab{padding:7px 12px;font-size:13px;border-radius:9px 9px 0 0;color:var(--muted);background:none;border:1px solid transparent;border-bottom:0;cursor:pointer}
 .tab:hover{color:var(--ink)}
 .tab{display:inline-flex;align-items:center;gap:4px}
@@ -159,6 +164,15 @@ table{border-collapse:collapse}
 .modal{background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(90,61,43,.25);width:440px;max-width:100%;max-height:100%;display:flex;flex-direction:column;outline:none}
 .modal.wide{width:1040px;height:100%}
 .modal.cmd-modal{width:820px}
+.modal.help-modal{width:860px}
+
+/* ===== 상태 설명 표 (도움말 대화상자, 리포트 표지) ===== */
+.help-table{width:100%;font-size:13px}
+.help-table th,.help-table td{text-align:left;vertical-align:top;border-bottom:1px solid #f6efe7;padding:6px 8px;overflow-wrap:anywhere}
+.help-table thead th{color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap}
+.help-table .c-st{font-weight:400;white-space:nowrap}
+.help-notes{margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}
+.help-notes li{margin:2px 0}
 .modal-head{display:flex;align-items:center;gap:8px;padding:14px 18px 10px;border-bottom:1px solid var(--line)}
 .modal-head h3{margin:0;font-size:16px;flex:1;min-width:0;overflow-wrap:anywhere}
 .modal-x{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted);padding:0 4px}
@@ -284,6 +298,8 @@ table{border-collapse:collapse}
 .server-table .num{text-align:right}
 .server-table .empty{text-align:center;color:var(--muted)}
 .server-table .c-err{overflow-wrap:anywhere}
+.report-help{padding:0 22px 14px}
+.report-help h2{font-size:15px;margin:10px 0 6px}
 
 /* ===== 인쇄 (PDF 리포트) ===== */
 @page{size:A4;margin:12mm}
@@ -291,9 +307,10 @@ table{border-collapse:collapse}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact;animation:none!important;transition:none!important}
   html,body{height:auto;background:#fff}
   .napi-report{max-width:none;margin:0}
-  .toast,.backdrop,.detail,.side,.hero-actions,.tabs,.filter,.btn,.sort .arrow,button.add{display:none!important}
+  .toast,.backdrop,.detail,.side,.hero-actions,.tabs,.tab-line,.filter,.btn,.sort .arrow,button.add{display:none!important}
   .sort{pointer-events:none}
-  .report-servers{break-after:page;page-break-after:always}
+  .report-help{break-after:page;page-break-after:always;break-inside:avoid;page-break-inside:avoid}
+  .help-table tr{break-inside:avoid;page-break-inside:avoid}
   .report-section{break-before:page;page-break-before:always}
   .api-table{width:100%}
   .api-table tr,.server-table tr{break-inside:avoid;page-break-inside:avoid}

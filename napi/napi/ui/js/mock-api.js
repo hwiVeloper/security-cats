@@ -222,7 +222,9 @@
         { name: "WAS-02", ok: true, error: null, oldest: "20251121", newest: TODAY, elapsed_sec: 5.4, truncated: false, lines: 17998102, parse_fail: 0 },
         { name: "WAS-03", ok: true, error: null, oldest: "20260825", newest: TODAY, elapsed_sec: 1.7, truncated: false, lines: 4120577, parse_fail: 0 }
       ],
-      probe_rest: { distinct: 214, count: 1032 }
+      probe_rest: { distinct: 214, count: 1032 },
+      awake_days: 30,
+      min_coverage_days: 90
     }
   };
 
@@ -598,6 +600,9 @@
         lines: o.ok ? 1000000 : 0, parse_fail: o.ok ? 17 : 0 };
     });
     r.scanned_at = nowIso();
+    var th = svc.thresholds || {};
+    r.awake_days = th.awake_days || 30;
+    r.min_coverage_days = th.min_coverage_days || 90;
     r.window = scan.window;
     r.since = scan.window === "all" ? null : daysBefore(TODAY, +scan.window);
     r.spec_location = svc.spec.location;

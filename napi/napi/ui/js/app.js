@@ -195,9 +195,16 @@
     var v = state.view;
     if (v.fresh) { v.status = R.defaultTab(r.counts); delete v.fresh; }
     var tabs = el("div");
+    var line = el("p");
     content.appendChild(tabs);
-    function onTab(k) { v.status = k; R.renderTabs(tabs, r.counts, v.status, onTab); drawTable(); }
-    R.renderTabs(tabs, r.counts, v.status, onTab);
+    content.appendChild(line);
+    var th = awakeDaysFor(r);
+    function drawTabs() {
+      R.renderTabs(tabs, r.counts, v.status, onTab, { thresholds: th, onHelp: openStatusHelp });
+      R.renderStatusLine(line, v.status, th);
+    }
+    function onTab(k) { v.status = k; drawTabs(); drawTable(); }
+    drawTabs();
 
     var main = el("div", { class: "main" });
     main.appendChild(filterBar(r));
@@ -206,6 +213,18 @@
     content.appendChild(main);
     drawTable();
     content.scrollTop = keepScroll;
+  }
+
+  // 최근 기준 일수: 결과에 남은 값 → 설정의 thresholds → 모름(null, 기본 문구)
+  function awakeDaysFor(r) {
+    var n = R.awakeDays(r);
+    if (n) return n;
+    var svc = services().filter(function (s) { return s.name === state.current; })[0];
+    return R.awakeDays(svc && svc.thresholds);
+  }
+
+  function openStatusHelp() {
+    openModal({ title: "상태 설명", body: R.statusHelpTable(awakeDaysFor(state.result)), cls: "help-modal" });
   }
 
   function uniq(list) {
