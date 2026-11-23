@@ -4,14 +4,14 @@ import { Backdrop, C, CatDefs, FONT, Face, MONO, Napnyang, Pill, STATUSES, Scene
 import { HAS_MUSIC } from "./music";
 
 // 장면 길이 (30fps). music.mp3는 약 100BPM(한 박 17.9프레임), 첫 박이 9.5프레임에 온다.
-// 장면 경계를 박자(4·10·17·26·30·34번째 박)에 맞췄다.
+// 장면 경계를 박자(4·10·17·26·33·40번째 박)에 맞췄다.
 const S = {
   intro: 81,
   problem: 108,
   how: 125,
   screens: 162,
-  statuses: 71,
-  outro: 73,
+  statuses: 125, // +3박(1.8초): 삭제 후보 문구를 읽을 시간
+  outro: 127, // 리포트 화면 +3박(1.8초)
 };
 const at = (() => {
   let t = 0;
@@ -40,7 +40,7 @@ const Intro: React.FC = () => {
           <Napnyang width={620} />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ display: "flex", fontSize: 230, fontWeight: 900, color: C.ink, letterSpacing: -6, lineHeight: 1 }}>
+          <div style={{ display: "flex", fontSize: 230, fontWeight: 900, color: C.ink, letterSpacing: -6, lineHeight: 1.25, marginBottom: 6 }}>
             {letters.map((l, i) => {
               const p = usePop(8 + i * 4, 9);
               return (
@@ -452,7 +452,7 @@ const Outro: React.FC = () => {
   const f = useCurrentFrame();
   const rep = usePop(0, 14);
   const chips = usePop(12);
-  const endStart = 36;
+  const endStart = 90;
   const end = usePop(endStart, 13);
   const repOut = interpolate(f, [endStart - 6, endStart + 6], [1, 0], clamp);
   return (
