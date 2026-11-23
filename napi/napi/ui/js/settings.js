@@ -664,7 +664,8 @@
         field("서비스명", nameInput, errText(E.svc, "name")),
         field("명세 형식", select([["openapi", "OpenAPI/Swagger"]], s.spec.type, function (v) { s.spec.type = v; changed(); })),
         field("명세 출처", sourceSel),
-        field("명세 위치", locInput, errText(E.svc, "spec"), { full: true }))));
+        field("명세 위치", locInput, errText(E.svc, "spec"), { full: true,
+          hint: "OpenAPI 3, Swagger 2.0·1.2를 읽어요. URL은 명세 주소(/v3/api-docs, /v2/api-docs, /api-docs)나 swagger-ui 화면 주소 모두 돼요." }))));
 
     form.appendChild(el("fieldset", null, el("legend", null, "경로 보정"),
       el("p", { class: "muted small", style: "margin:0 0 6px" }, "로그의 경로 앞부분을 빼거나(strip) 붙여서(add) 명세 경로와 맞춰요. 예: /api 를 빼기"),
