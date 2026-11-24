@@ -24,7 +24,7 @@
  *   log_format / custom_format이 오면 거절한다 (설정 화면이 예전 모양을 보내지 않는지 확인용).
  * - test_format / test_log_line은 logformat.py를 줄인 JS 판이다 (리터럴, 공백, [시각], %{...}t, %r/%m/%U/%s).
  * - 비밀번호·키파일 암호는 "입력됨" 표시만 둔다 (값은 어디에도 두지 않는다). secret_status, clear_secret 흉내.
- * - pick_key_file은 고정 경로를 고른 것처럼 돌려준다.
+ * - pick_key_file / pick_spec_file은 고정 경로를 고른 것처럼, save_endpoint_template은 저장한 것처럼 돌려준다.
  */
 (function (root) {
   "use strict";
@@ -818,6 +818,12 @@
     },
     pick_key_file: function () {
       return reply({ ok: true, path: "C:\\Users\\napi\\.ssh\\id_rsa_napi" });
+    },
+    pick_spec_file: function () {
+      return reply({ ok: true, path: "C:\\specs\\endpoints.xlsx" });
+    },
+    save_endpoint_template: function () {
+      return reply({ ok: true, path: "C:\\Users\\napi\\Downloads\\napi_엔드포인트_양식.xlsx" });
     },
     start_scan: function (name, window) {
       if (["90", "180", "365", "all"].indexOf(String(window)) < 0) return reply({ ok: false, error: "분석 기간이 올바르지 않아요" });

@@ -89,6 +89,11 @@ class Dialogs:
         self.key_calls += 1
         return self.key_answer
 
+    spec_answer = None
+
+    def open_spec_file(self):
+        return self.spec_answer
+
     def save_file(self, default_name, kind):
         self.save_calls.append((default_name, kind))
         return self.save_answer
@@ -135,7 +140,7 @@ def env(tmp_path):
                   results_dir=tmp_path / "results", secrets=secrets,
                   collector_factory=factory, spec_loader=lambda src: holder["spec"](src),
                   open_file=dialogs.open_file, save_file=dialogs.save_file,
-                  open_key_file=dialogs.open_key_file,
+                  open_key_file=dialogs.open_key_file, open_spec_file=dialogs.open_spec_file,
                   exporter=exporter, today=lambda: TODAY, hostkey_timeout=5.0)
         return Api(**{**kw, **overrides})
 
@@ -477,6 +482,29 @@ def test_api_pick_key_file(env):
     dialogs.key_answer = None
     assert api.pick_key_file() == {"ok": False, "path": None}
     assert dialogs.key_calls == 2
+
+
+def test_api_pick_spec_file(env):
+    api, dialogs = env["api"], env["dialogs"]
+    dialogs.spec_answer = "C:\\specs\\endpoints.xlsx"
+    assert api.pick_spec_file() == {"ok": True, "path": "C:\\specs\\endpoints.xlsx"}
+    dialogs.spec_answer = None
+    assert api.pick_spec_file() == {"ok": False, "path": None}
+
+
+def test_api_save_endpoint_template(env):
+    from napi.endpoints import load_endpoint_list
+    api, dialogs = env["api"], env["dialogs"]
+    target = env["tmp"] / "양식.xlsx"
+    dialogs.save_answer = str(target)
+    assert api.save_endpoint_template() == {"ok": True, "path": str(target)}
+    assert dialogs.save_calls[-1] == ("napi_엔드포인트_양식.xlsx", "xlsx")
+    assert len(load_endpoint_list(target)) == 4  # 예시 3줄 (GET/POST 는 2개)
+    dialogs.save_answer = None
+    assert api.save_endpoint_template() == {"ok": False, "path": None}
+    dialogs.save_answer = str(env["tmp"] / "no-such-dir" / "a.xlsx")
+    res = api.save_endpoint_template()
+    assert res["ok"] is False and "양식을 저장하지 못했어요" in res["error"]
 
 
 def test_set_password_apply_to_service(env):
@@ -906,11 +934,12 @@ PUBLIC = {
     "missing_secrets", "set_password", "set_passphrase", "start_scan", "get_scan_progress",
     "answer_hostkey", "cancel_scan", "get_result", "save_note", "delete_note", "export",
     "test_format", "secret_status", "clear_secret", "pick_key_file",
+    "pick_spec_file", "save_endpoint_template",
 }
 
 
 def test_public_method_count():
-    assert len(PUBLIC) == 20
+    assert len(PUBLIC) == 22
 
 
 def test_no_secret_in_any_return(env, tmp_path):
@@ -951,6 +980,8 @@ def test_no_secret_in_any_return(env, tmp_path):
     call("secret_status", "키 서비스")
     dialogs.key_answer = "C:/keys/id_ed25519"
     call("pick_key_file")
+    call("pick_spec_file")
+    call("save_endpoint_template")
     call("preview_commands", SVC, "365")
     call("missing_secrets", SVC)
     call("missing_secrets", "키 서비스")

@@ -16,6 +16,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 import requests
 import yaml
 
+from napi.endpoints import load_endpoint_list
 from napi.models import SpecOperation, SpecSource
 
 # HEAD/OPTIONS는 판정에서 제외한다 (설계 §5.7.4). 매처도 이 메서드의 로그 행을 버리므로
@@ -339,6 +340,10 @@ def _load_url(url: str, timeout: float) -> list[SpecOperation]:
 
 
 def load_spec(src: SpecSource, timeout: float = 15.0) -> list[SpecOperation]:
+    if src.type == "endpoints":
+        if src.source != "file":
+            raise SpecError("엔드포인트 목록(엑셀)은 파일로만 넣을 수 있어요. 명세 출처를 파일로 바꿔 주세요.")
+        return load_endpoint_list(src.location)
     if src.source == "url":
         return _load_url(src.location, timeout)
     try:

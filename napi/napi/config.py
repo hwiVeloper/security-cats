@@ -258,6 +258,10 @@ def validate_config(cfg: AppConfig) -> list[str]:
             if _below(getattr(svc.thresholds, th), 1):
                 errors.append(f"{label}: 기준값 {th}은(는) 1 이상의 정수여야 합니다.")
         errors += _scope_problems(svc, label)
+        if svc.spec.type not in ("openapi", "endpoints"):
+            errors.append(f"{label}: 명세 형식을 알 수 없어요: {svc.spec.type}")
+        elif svc.spec.type == "endpoints" and svc.spec.source != "file":
+            errors.append(f"{label}: 엔드포인트 목록(엑셀) 명세는 파일로만 넣을 수 있어요.")
         for sv in svc.servers:
             sl = f"{label} / 서버 '{sv.name}'"
             if not sv.host.strip():

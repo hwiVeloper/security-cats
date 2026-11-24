@@ -29,6 +29,7 @@ from napi.models import (
 from napi.remote.command import build_remote_command
 from napi.scan import ScanError, run_scan
 from napi.secrets import SessionSecrets
+from napi.endpoints import write_template
 from napi.spec import SpecError, load_spec
 from napi.store import load_result, refresh_notes, result_to_dict, safe_name, save_result
 
@@ -96,7 +97,8 @@ def _webview_open_file() -> str | None:
 
 def _webview_save_file(default_name: str, kind: str) -> str | None:
     import webview
-    types = {"html": ("HTML 파일 (*.html)",), "pdf": ("PDF 파일 (*.pdf)",)}[kind]
+    types = {"html": ("HTML 파일 (*.html)",), "pdf": ("PDF 파일 (*.pdf)",),
+             "xlsx": ("엑셀 파일 (*.xlsx)",)}[kind]
     picked = webview.windows[0].create_file_dialog(
         webview.FileDialog.SAVE, save_filename=default_name, file_types=types)
     return _first(picked)
@@ -106,6 +108,14 @@ def _webview_open_key_file() -> str | None:
     import webview
     picked = webview.windows[0].create_file_dialog(
         webview.FileDialog.OPEN, file_types=("모든 파일 (*.*)",))
+    return _first(picked)
+
+
+def _webview_open_spec_file() -> str | None:
+    import webview
+    picked = webview.windows[0].create_file_dialog(
+        webview.FileDialog.OPEN,
+        file_types=("명세·엔드포인트 목록 (*.json;*.yaml;*.yml;*.xlsx;*.csv)", "모든 파일 (*.*)"))
     return _first(picked)
 
 
@@ -156,6 +166,7 @@ class Api:
                  open_file: Callable[[], str | None] = _webview_open_file,
                  save_file: Callable[[str, str], str | None] = _webview_save_file,
                  open_key_file: Callable[[], str | None] = _webview_open_key_file,
+                 open_spec_file: Callable[[], str | None] = _webview_open_spec_file,
                  exporter=None, today: Callable[[], date] = date.today,
                  hostkey_timeout: float = HOSTKEY_TIMEOUT_SEC):
         self._config_path = Path(config_path) if config_path else paths.config_path()
@@ -167,6 +178,7 @@ class Api:
         self._open_file = open_file
         self._save_file = save_file
         self._open_key_file = open_key_file
+        self._open_spec_file = open_spec_file
         self._exporter = exporter
         self._today = today
         self._hostkey_timeout = hostkey_timeout
@@ -330,6 +342,26 @@ class Api:
         picked = self._open_key_file()
         if not picked:
             return {"ok": False, "path": None}
+        return {"ok": True, "path": str(picked)}
+
+    @_safe
+    def pick_spec_file(self) -> dict:
+        """명세·엔드포인트 목록 파일 경로만 고른다. 파일은 스캔할 때 읽는다."""
+        picked = self._open_spec_file()
+        if not picked:
+            return {"ok": False, "path": None}
+        return {"ok": True, "path": str(picked)}
+
+    @_safe
+    def save_endpoint_template(self) -> dict:
+        """엔드포인트 목록 엑셀 양식을 사용자가 고른 위치에 저장한다."""
+        picked = self._save_file("napi_엔드포인트_양식.xlsx", "xlsx")
+        if not picked:
+            return {"ok": False, "path": None}
+        try:
+            write_template(Path(picked))
+        except OSError as e:
+            raise _UserError(f"양식을 저장하지 못했어요: {picked} ({e.strerror or e})") from None
         return {"ok": True, "path": str(picked)}
 
     # ------------------------------------------------------------------- scan

@@ -24,6 +24,18 @@
   var WINDOW_LABEL = { "90": "90일", "180": "180일", "365": "1년", "all": "전체" };
   var TIER_NOTICE = "한 서비스에는 같은 요청을 한 번만 기록하는 서버(같은 계층)만 넣어 주세요";
   var SECRET_HINT = "저장되지 않아요. 프로그램을 끄면 사라져요";
+  var SPEC_TYPES = [["openapi", "OpenAPI/Swagger"], ["endpoints", "엔드포인트 목록 (엑셀)"]];
+  var SPEC_UI = {
+    openapi: {
+      url: "https://swagger.example/v3/api-docs", file: "C:\\specs\\api.yaml",
+      hint: "OpenAPI 3, Swagger 2.0·1.2를 읽어요. URL은 명세 주소(/v3/api-docs, /v2/api-docs, /api-docs)나 swagger-ui 화면 주소 모두 돼요."
+    },
+    endpoints: {
+      url: "", file: "C:\\specs\\endpoints.xlsx",
+      hint: "엑셀(xlsx)·CSV 파일의 첫 번째 시트만 읽어요. 여러 시트는 지원하지 않아요. " +
+        "열: endpoint(필수), method(GET/POST처럼 여러 개, 비우면 모든 메서드), 설명, 태그, 폐기(Y). [양식 받기]로 받은 파일을 채워 쓰면 돼요."
+    }
+  };
   var SECRET_SET = "이번 실행 동안 입력됨 ✓";
   var GLOB_HINT = "경로마다 /로 시작하는 전체 경로를 적어요. 디렉터리에도 * ? [ 를 쓸 수 있어요 (예: /data/*/logs/access.log*, 맨 앞 조각과 숨김 폴더는 제외). .gz 파일도 읽어요.";
   var FORMATS_TAB = "formats"; // ui.sel: 로그 형식 탭
@@ -651,21 +663,35 @@
       if (ui.listNames[w.key]) ui.listNames[w.key].textContent = v || "(이름 없음)";
     });
     ui.focus = nameInput;
-    var locInput = input("text", s.spec.location, function (v) { s.spec.location = v; changed(); },
-      { placeholder: s.spec.source === "file" ? "C:\\specs\\api.yaml" : "https://swagger.example/v3/api-docs" });
+    var locInput = input("text", s.spec.location, function (v) { s.spec.location = v; changed(); });
     var sourceSel = select([["url", "URL"], ["file", "파일"]], s.spec.source, function (v) {
-      s.spec.source = v; changed();
-      locInput.placeholder = v === "file" ? "C:\\specs\\api.yaml" : "https://swagger.example/v3/api-docs";
+      s.spec.source = v; changed(); syncSpec();
     });
+    var typeSel = select(SPEC_TYPES, s.spec.type, function (v) { s.spec.type = v; changed(); syncSpec(); });
+    var pickSpecBtn = el("button", { type: "button", class: "btn small", onclick: function () { pickSpecFile(s, locInput); } }, "파일 고르기…");
+    var templateBtn = el("button", { type: "button", class: "btn small", onclick: saveEndpointTemplate }, "양식 받기…");
+    var locField = field("명세 위치", locInput, errText(E.svc, "spec"), { full: true, hint: " ",
+      addon: el("span", { class: "with-btn" }, pickSpecBtn, templateBtn) });
+    var locHint = locField.querySelector(".muted.small");
+    function syncSpec() {
+      var t = SPEC_UI[s.spec.type] ? s.spec.type : "openapi";
+      if (t === "endpoints" && s.spec.source !== "file") s.spec.source = "file"; // 엑셀 목록은 파일로만
+      sourceSel.value = s.spec.source;
+      sourceSel.disabled = t === "endpoints";
+      locInput.placeholder = s.spec.source === "file" ? SPEC_UI[t].file : SPEC_UI[t].url;
+      pickSpecBtn.hidden = s.spec.source !== "file";
+      templateBtn.hidden = t !== "endpoints";
+      locHint.textContent = SPEC_UI[t].hint;
+    }
+    syncSpec();
 
     form.appendChild(el("fieldset", null, el("legend", null, "서비스"),
       cardErr(errText(E.svc, "_")),
       el("div", { class: "fields" },
         field("서비스명", nameInput, errText(E.svc, "name")),
-        field("명세 형식", select([["openapi", "OpenAPI/Swagger"]], s.spec.type, function (v) { s.spec.type = v; changed(); })),
+        field("명세 형식", typeSel),
         field("명세 출처", sourceSel),
-        field("명세 위치", locInput, errText(E.svc, "spec"), { full: true,
-          hint: "OpenAPI 3, Swagger 2.0·1.2를 읽어요. URL은 명세 주소(/v3/api-docs, /v2/api-docs, /api-docs)나 swagger-ui 화면 주소 모두 돼요." }))));
+        locField)));
 
     form.appendChild(el("fieldset", null, el("legend", null, "경로 보정"),
       el("p", { class: "muted small", style: "margin:0 0 6px" }, "로그의 경로 앞부분을 빼거나(strip) 붙여서(add) 명세 경로와 맞춰요. 예: /api 를 빼기"),
@@ -921,6 +947,31 @@
       el("div", { class: "path-tools" }, F.toggleButton("샘플 줄로 형식 테스트", sample)),
       sample);
     return { node: node, input: inp };
+  }
+
+  function pickSpecFile(s, locInput) {
+    if (ui.busy) return;
+    var u = ui;
+    api().pick_spec_file().then(function (res) {
+      if (u !== ui) return;
+      if (isErr(res)) { ui.msg.textContent = res.error; return; }
+      if (!res || !res.ok || !res.path) return; // 고르지 않음
+      s.spec.location = String(res.path);
+      locInput.value = s.spec.location;
+      changed();
+      locInput.focus();
+    }, function () { if (u === ui) ui.msg.textContent = "파일을 고르지 못했어요"; });
+  }
+
+  function saveEndpointTemplate() {
+    if (ui.busy) return;
+    var u = ui;
+    api().save_endpoint_template().then(function (res) {
+      if (u !== ui) return;
+      if (isErr(res)) { ui.msg.textContent = res.error; return; }
+      if (!res || !res.ok || !res.path) return; // 저장 취소
+      ui.msg.textContent = "양식을 저장했어요: " + res.path;
+    }, function () { if (u === ui) ui.msg.textContent = "양식을 저장하지 못했어요"; });
   }
 
   function pickKeyFile(sv, keyInput) {

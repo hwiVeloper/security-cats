@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from napi.logformat import is_variable_segment
-from napi.models import AggRow, PathMapping, SpecOperation
+from napi.models import ANY_METHOD, AggRow, PathMapping, SpecOperation
 
 _DROPPED_METHODS = {"HEAD", "OPTIONS"}
 
@@ -163,12 +163,15 @@ def match(
             best_lit = -1
             tied_normalized = False
             for op, tpl in templates:
-                if op.method != r.method:
+                exact = op.method == r.method
+                if not exact and op.method != ANY_METHOD:
                     continue
                 m = _match_template(tpl, segs)
                 if m is None:
                     continue
                 lit, via_normalized = m
+                # 같은 리터럴 수면 메서드가 정확히 같은 후보가 ANY(모든 메서드) 후보보다 우선한다
+                lit = lit * 2 + exact
                 if lit > best_lit:
                     tied, best_lit, tied_normalized = [op.key], lit, via_normalized
                 elif lit == best_lit and op.key not in tied:

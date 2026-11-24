@@ -102,6 +102,10 @@ class AppConfig:
     log_formats: list[LogFormatDef] = field(default_factory=list)
 
 
+# 엔드포인트 목록(엑셀)에서 메서드를 비운 줄. 어떤 메서드의 호출이든 이 API의 호출로 본다.
+ANY_METHOD = "ANY"
+
+
 @dataclass
 class SpecOperation:
     method: str
