@@ -484,6 +484,15 @@ def test_api_pick_key_file(env):
     assert dialogs.key_calls == 2
 
 
+def test_file_dialog_types_pass_pywebview_filter():
+    """파일 종류 이름에 · 같은 문자가 있으면 pywebview가 ValueError를 내서 파일 창이 열리지 않는다."""
+    from webview.util import parse_file_type
+    from napi.api import FILE_TYPES
+    for kind, types in FILE_TYPES.items():
+        for t in types:
+            parse_file_type(t)  # ValueError면 실패
+
+
 def test_api_pick_spec_file(env):
     api, dialogs = env["api"], env["dialogs"]
     dialogs.spec_answer = "C:\\specs\\endpoints.xlsx"

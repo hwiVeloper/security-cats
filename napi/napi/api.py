@@ -88,35 +88,42 @@ class _Scan:
             p.event.set()
 
 
-def _webview_open_file() -> str | None:
+# 파일 창의 파일 종류. pywebview(webview.util.parse_file_type)는 "이름 (*.확장자;*.확장자)" 꼴만 받고,
+# 이름에는 글자·숫자·공백만 쓸 수 있다 (·, /, - 등이 있으면 ValueError로 창이 열리지 않는다).
+# tests/test_api.py 가 모든 항목을 pywebview 규칙으로 검사한다.
+FILE_TYPES = {
+    "config": ("YAML 설정 파일 (*.yaml;*.yml)", "모든 파일 (*.*)"),
+    "key": ("모든 파일 (*.*)",),
+    "spec": ("명세 또는 엔드포인트 목록 (*.json;*.yaml;*.yml;*.xlsx;*.csv)", "모든 파일 (*.*)"),
+    "html": ("HTML 파일 (*.html)",),
+    "pdf": ("PDF 파일 (*.pdf)",),
+    "xlsx": ("엑셀 파일 (*.xlsx)",),
+}
+
+
+def _webview_open(kind: str) -> str | None:
     import webview
-    picked = webview.windows[0].create_file_dialog(
-        webview.FileDialog.OPEN, file_types=("YAML 설정 파일 (*.yaml;*.yml)", "모든 파일 (*.*)"))
+    picked = webview.windows[0].create_file_dialog(webview.FileDialog.OPEN, file_types=FILE_TYPES[kind])
     return _first(picked)
+
+
+def _webview_open_file() -> str | None:
+    return _webview_open("config")
 
 
 def _webview_save_file(default_name: str, kind: str) -> str | None:
     import webview
-    types = {"html": ("HTML 파일 (*.html)",), "pdf": ("PDF 파일 (*.pdf)",),
-             "xlsx": ("엑셀 파일 (*.xlsx)",)}[kind]
     picked = webview.windows[0].create_file_dialog(
-        webview.FileDialog.SAVE, save_filename=default_name, file_types=types)
+        webview.FileDialog.SAVE, save_filename=default_name, file_types=FILE_TYPES[kind])
     return _first(picked)
 
 
 def _webview_open_key_file() -> str | None:
-    import webview
-    picked = webview.windows[0].create_file_dialog(
-        webview.FileDialog.OPEN, file_types=("모든 파일 (*.*)",))
-    return _first(picked)
+    return _webview_open("key")
 
 
 def _webview_open_spec_file() -> str | None:
-    import webview
-    picked = webview.windows[0].create_file_dialog(
-        webview.FileDialog.OPEN,
-        file_types=("명세·엔드포인트 목록 (*.json;*.yaml;*.yml;*.xlsx;*.csv)", "모든 파일 (*.*)"))
-    return _first(picked)
+    return _webview_open("spec")
 
 
 def _first(picked) -> str | None:
