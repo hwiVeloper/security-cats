@@ -1116,6 +1116,7 @@ class FakeWebview:
         win.events = type("E", (), {})()
         win.events.closed = self._Handlers()
         win.events.loaded = self._Handlers()
+        win.events.shown = self._Handlers()
         self.created.append((title, kw, win))
         return win
 
@@ -1165,7 +1166,9 @@ def main_env(monkeypatch, tmp_path, no_splash):
         real(self)
 
     monkeypatch.setattr(Api, "_shutdown", spy)
-    return boxes, shutdowns
+    yield boxes, shutdowns
+    from napi import startlog
+    startlog._detach()  # noqa: SLF001 — main()이 연 기록 파일을 닫는다
 
 
 def test_main_without_webview2_shows_message_and_no_window(monkeypatch, main_env):
@@ -1196,9 +1199,12 @@ def test_main_opens_window_and_shuts_down(monkeypatch, main_env):
     assert (kw["width"], kw["height"], kw["min_size"]) == (1280, 820, (1000, 640))
     assert kw["background_color"] == "#FBF7F2"  # 흰 화면 대신 앱 배경색
     assert fake.started == [{"gui": "edgechromium"}]
-    assert fake.start_funcs == [entry._close_splash_later]  # 로딩 화면 시간 초과 닫기
-    assert win.events.loaded.items == [entry._close_splash]
-    assert len(win.events.closed.items) == 1
+    (start_func,) = fake.start_funcs  # 로딩 화면 시간 초과 닫기 + 로드 감시
+    assert callable(start_func)
+    assert win.events.loaded.items[0] == entry._close_splash
+    assert len(win.events.loaded.items) == 2  # 로드 감시
+    assert len(win.events.closed.items) == 2  # 스캔 취소 + 기록
+    assert len(win.events.shown.items) == 1
     assert shutdowns == [kw["js_api"]]
     assert boxes == []
 

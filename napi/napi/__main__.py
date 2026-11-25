@@ -8,6 +8,8 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
+from napi import startlog
+
 TITLE = "napi — 잠자는 API를 찾아요"
 WEBVIEW2_MISSING = ("WebView2 런타임이 필요해요. "
                     "https://go.microsoft.com/fwlink/p/?LinkId=2124703 에서 설치해 주세요")
@@ -60,9 +62,18 @@ def _close_splash() -> None:
     splash(close=True)
 
 
-def _close_splash_later(delay: float = SPLASH_TIMEOUT) -> None:
-    """webview.start 가 GUI 루프를 시작한 뒤 부른다. loaded 가 오지 않아도 로딩 화면이 남지 않게 한다."""
-    timer = threading.Timer(delay, _close_splash)
+def _close_splash_later(delay: float = SPLASH_TIMEOUT,
+                        then: Callable[[], None] | None = None) -> None:
+    """webview.start 가 GUI 루프를 시작한 뒤 부른다. loaded 가 오지 않아도 로딩 화면이 남지 않게 한다.
+
+    then 은 로딩 화면을 닫은 뒤 이어서 부른다 (페이지가 아직 안 떴으면 안내).
+    """
+    def fire() -> None:
+        _close_splash()
+        if then is not None:
+            then()
+
+    timer = threading.Timer(delay, fire)
     timer.daemon = True  # 창을 먼저 닫아도 프로세스 종료를 붙잡지 않게
     timer.start()
 
@@ -90,31 +101,54 @@ def _version(value: object) -> tuple[int, ...]:
         return ()
 
 
-def webview2_available(read: RegistryReader = _read_registry,
-                       machine: str | None = None) -> bool:
-    """pywebview가 edgechromium을 쓸 수 있으면 True."""
+def webview2_version(read: RegistryReader = _read_registry,
+                     machine: str | None = None) -> tuple[int, ...] | None:
+    """pywebview가 edgechromium으로 쓸 WebView2 버전 중 가장 높은 것. 쓸 수 없으면 None."""
     release = read("HKEY_LOCAL_MACHINE", _DOTNET_KEY, "Release")
     if not isinstance(release, int) or release < _DOTNET_MIN_RELEASE:
-        return False
+        return None
     machine = platform.machine() if machine is None else machine
     hklm = r"Microsoft\EdgeUpdate" if machine == "x86" else r"WOW6432Node\Microsoft\EdgeUpdate"
+    best: tuple[int, ...] = ()
     for client in _WEBVIEW2_CLIENTS:
         for hive, base in (("HKEY_CURRENT_USER", r"Microsoft\EdgeUpdate"),
                            ("HKEY_LOCAL_MACHINE", hklm)):
-            pv = read(hive, rf"SOFTWARE\{base}\Clients\{client}", "pv")
-            if _version(pv) >= _WEBVIEW2_MIN:
-                return True
-    return False
+            best = max(best, _version(read(hive, rf"SOFTWARE\{base}\Clients\{client}", "pv")))
+    return best if best >= _WEBVIEW2_MIN else None
 
 
-def _message_box(text: str) -> None:
+def webview2_available(read: RegistryReader = _read_registry,
+                       machine: str | None = None) -> bool:
+    """pywebview가 edgechromium을 쓸 수 있으면 True."""
+    return webview2_version(read, machine) is not None
+
+
+def _message_box(text: str, flags: int = 0x10) -> None:  # MB_ICONERROR
     import ctypes
-    ctypes.windll.user32.MessageBoxW(None, text, "napi", 0x10)  # MB_ICONERROR
+    ctypes.windll.user32.MessageBoxW(None, text, "napi", flags)
+
+
+_MB_WARNING_TOPMOST = 0x30 | 0x40000  # MB_ICONWARNING | MB_TOPMOST: 하얀 창 뒤에 숨지 않게
+
+
+def _start_log() -> Path | None:
+    """시작 기록을 열고 실행 환경을 남긴다. 실패해도 앱은 뜬다."""
+    try:
+        from napi.paths import app_dir
+        path = startlog.setup(app_dir() / startlog.LOG_NAME)
+        version = webview2_version()
+        startlog.log.info("시작: %s", startlog.environment(
+            ".".join(map(str, version)) if version else None))
+        return path
+    except Exception:
+        return None
 
 
 def main() -> None:
     splash("설정을 불러오는 중…", 78)
+    log_path = _start_log()
     if not webview2_available():
+        startlog.log.error("WebView2 런타임을 찾지 못했어요")
         splash(close=True)  # 로딩 화면(항상 위)이 안내 창을 가리지 않게 먼저 닫는다
         _message_box(WEBVIEW2_MISSING)
         raise SystemExit(1)
@@ -132,9 +166,18 @@ def main() -> None:
     window.events.closed += api._shutdown
     # 페이지가 로드되면 로딩 화면을 닫는다. 첫 렌더 전까지는 index.html 의 로딩 표시가 이어받는다.
     window.events.loaded += _close_splash
+    # 일부 PC에서는 WebView2가 초기화·로드에 실패해도 pywebview가 아무것도 알리지 않아 창이 빈 채로 남는다.
+    # 시간 안에 loaded 가 오지 않으면 원인과 기록 파일 위치를 알린다.
+    watch = startlog.LoadWatch(
+        lambda: _message_box(startlog.not_loaded_message(log_path), _MB_WARNING_TOPMOST))
+    window.events.loaded += watch.loaded
+    window.events.shown += lambda: startlog.log.info(
+        "창 표시: %s", getattr(window, "real_url", None))
+    window.events.closed += lambda: startlog.log.info("창 닫힘")
     try:
-        webview.start(_close_splash_later, gui="edgechromium")
+        webview.start(lambda: _close_splash_later(then=watch.timeout), gui="edgechromium")
     except Exception as e:
+        startlog.log.exception("webview.start 실패")
         splash(close=True)
         if sys.stderr is not None:  # PyInstaller windowed 빌드에서는 stderr가 없다
             traceback.print_exc()

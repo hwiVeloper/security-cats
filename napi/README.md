@@ -11,6 +11,18 @@ Swagger/OpenAPI 명세와 서버의 접근 로그를 비교해서 **사용되지
 Windows 10/11 에는 보통 WebView2 런타임이 이미 들어 있습니다. 없으면 실행 시 안내 창이 뜨니
 안내된 주소에서 설치해 주세요.
 
+### 창이 하얀 화면에서 멈출 때
+
+실행할 때마다 시작 과정을 `%APPDATA%\napi\napi.log` 에 남깁니다 (직전 실행은 `napi.log.1`).
+15초 안에 화면이 뜨지 않으면 원인과 이 파일 위치를 알려 주는 창이 뜨니, 그 파일을 담당자에게 보내 주세요.
+
+가상 PC·원격 데스크톱처럼 그래픽 가속이 불안정한 PC에서는 그래픽 가속을 끄고 실행해 보세요.
+`napi.exe` 가 있는 폴더에서 PowerShell을 열고 실행합니다.
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--disable-gpu"; .\napi.exe
+```
+
 ### 소스에서 실행
 
 ```powershell
