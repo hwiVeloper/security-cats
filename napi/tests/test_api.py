@@ -118,6 +118,10 @@ class FakeExporter:
         self.calls.append(("pdf", result.service, Path(path)))
         return Path(path)
 
+    def export_xlsx(self, result, path):
+        self.calls.append(("xlsx", result.service, Path(path)))
+        return Path(path)
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -903,6 +907,10 @@ def test_export_with_fake_exporter(env, tmp_path):
     assert api.export(SVC, "pdf") == {"ok": False, "error": "Edge를 찾지 못했어요"}
     exporter.fail = OSError(f"disk {PW}")
     assert api.export(SVC, "pdf") == {"ok": False, "error": "처리 중 오류가 발생했어요 (OSError)"}
+    dialogs.save_answer = str(tmp_path / "out.xlsx")
+    assert api.export(SVC, "xlsx") == {"ok": True, "path": str(tmp_path / "out.xlsx")}
+    assert dialogs.save_calls[-1] == ("napi_라운드페이 API_20261119.xlsx", "xlsx")
+    assert exporter.calls[-1] == ("xlsx", SVC, tmp_path / "out.xlsx")
     assert api.export(SVC, "docx") == {"ok": False, "error": "내보내기 형식이 올바르지 않아요"}
 
 

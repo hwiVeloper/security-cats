@@ -1,4 +1,4 @@
-"""자체 완결형 HTML 리포트와 Edge headless PDF 내보내기."""
+"""자체 완결형 HTML 리포트, Edge headless PDF, 엑셀(xlsx) 내보내기."""
 from __future__ import annotations
 
 import json
@@ -8,8 +8,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from napi.models import ServiceResult
+from napi.models import ApiResult, ServiceResult, Status
 from napi.store import result_to_dict
+from napi.xlsx import Sheet, write_xlsx
 
 _UI = Path(__file__).parent / "ui"
 _PDF_TIMEOUT_SEC = 60
@@ -91,3 +92,84 @@ def export_pdf(r: ServiceResult, out: Path, edge: Path | None = None) -> Path:
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ xlsx
+
+# 화면(render.js STATUS_META)과 같은 이름
+STATUS_LABEL = {
+    Status.AWAKE: "깨어있음", Status.DROWSY: "꾸벅꾸벅", Status.ASLEEP: "잠듦", Status.RIP: "영면",
+    Status.SLEEPTALK: "잠꼬대", Status.GHOST: "유령", Status.PROBE: "외부 탐색 시도",
+}
+# 요약 시트에 적는 순서 (화면 도넛·범례 순서 + 외부 탐색 시도)
+_SUMMARY_ORDER = [Status.AWAKE, Status.DROWSY, Status.ASLEEP, Status.RIP, Status.SLEEPTALK,
+                  Status.GHOST, Status.PROBE]
+# 응답 분포는 상태코드 구간별 숫자 열로 나눈다 (엑셀에서 정렬·필터·합계가 되게).
+# "???" 는 상태코드가 없는 로그 형식에서 온 호출이다.
+DIST_BUCKETS = [("2xx", "응답 2xx"), ("3xx", "응답 3xx"), ("4xx", "응답 4xx"), ("5xx", "응답 5xx"),
+                ("???", "응답 상태 미상")]
+XLSX_HEADERS = (["메서드", "경로", "설명", "상태", "호출 수", "마지막 호출"]
+                + [label for _, label in DIST_BUCKETS]
+                + ["태그", "유지 사유", "메모 작성자", "메모 날짜"])
+_XLSX_WIDTHS = [9, 48, 30, 12, 11, 13] + [11] * len(DIST_BUCKETS) + [20, 36, 12, 12]
+
+
+def _ymd(s: str | None) -> str:
+    """"20261123" → "2026-11-23". 모르는 형식은 그대로."""
+    s = s or ""
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else s
+
+
+def _dist_cells(by_status: dict[str, int]) -> list[int | None]:
+    known = {k for k, _ in DIST_BUCKETS}
+    cells: list[int | None] = []
+    for key, _ in DIST_BUCKETS:
+        n = int(by_status.get(key) or 0)
+        if key == "???":  # 구간에 안 맞는 코드(예: 1xx)는 상태 미상에 더한다
+            n += sum(int(v or 0) for k, v in by_status.items() if k not in known)
+        cells.append(n or None)
+    return cells
+
+
+def _api_row(a: ApiResult) -> list:
+    note = a.note
+    return ([a.method, a.path, a.summary or "", STATUS_LABEL.get(a.status, str(a.status)),
+             int(a.calls), _ymd(a.last)]
+            + _dist_cells(a.by_status)
+            + [", ".join(a.tags), note.reason if note else "", note.author if note else "",
+               note.date if note else ""])
+
+
+def _log_range(r: ServiceResult) -> str:
+    """render.js logRange 와 같은 계산: 분석 기간과 실제로 읽은 로그 범위가 겹치는 구간."""
+    oldest = min((s.oldest for s in r.servers if s.oldest), default=None)
+    newest = max((s.newest for s in r.servers if s.newest), default=None)
+    start = r.since if r.since and (not oldest or r.since > oldest) else oldest
+    end = r.until if newest and r.until and newest > r.until else (newest or r.until)
+    return f"{_ymd(start) or '—'} ~ {_ymd(end) or '—'}"
+
+
+def build_report_sheets(r: ServiceResult) -> list[Sheet]:
+    """'전체' 시트(화면의 전체 탭: 외부 탐색 시도 제외, 결과 순서 그대로)와 '요약' 시트."""
+    rows = [_api_row(a) for a in r.apis if a.status != Status.PROBE]
+    summary = [
+        ["항목", "값"],
+        ["서비스", r.service],
+        ["스캔", r.scanned_at.replace("T", " ")[:16]],
+        ["로그 기간", _log_range(r)],
+        ["서버", f"{len(r.servers)}대"],
+        ["명세", r.spec_location],
+        ["요약", r.summary],
+    ]
+    summary += [[STATUS_LABEL[s], int(r.counts.get(s.value, 0))] for s in _SUMMARY_ORDER]
+    return [
+        Sheet("전체", [XLSX_HEADERS] + rows, _XLSX_WIDTHS, autofilter=True),
+        Sheet("요약", summary, [14, 90]),
+    ]
+
+
+def export_xlsx(r: ServiceResult, out: Path) -> Path:
+    try:
+        return write_xlsx(Path(out), build_report_sheets(r))
+    except OSError as e:
+        raise ReportError(f"파일을 저장하지 못했어요: {e}") from None

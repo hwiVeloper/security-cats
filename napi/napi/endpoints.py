@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from napi.models import ANY_METHOD, SpecOperation
+from napi.xlsx import Sheet, write_xlsx
 
 _METHODS = {"GET", "PUT", "POST", "DELETE", "PATCH", "TRACE"}
 _DROPPED = {"HEAD", "OPTIONS"}  # 판정 제외 (spec.py 와 같은 기준)
@@ -300,91 +301,11 @@ TEMPLATE_GUIDE = [
     "• CSV(쉼표·탭 구분)로 저장해서 넣어도 돼요.",
 ]
 
-_CT = "application/vnd.openxmlformats-officedocument.spreadsheetml"
-_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
-_DOC_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-
-def _x(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def _col_name(i: int) -> str:
-    s, i = "", i + 1
-    while i:
-        i, r = divmod(i - 1, 26)
-        s = chr(65 + r) + s
-    return s
-
-
-def _sheet_xml(rows: list[list[str]], widths: list[int], header: bool) -> str:
-    out = []
-    for ri, row in enumerate(rows, 1):
-        style = ' s="1"' if header and ri == 1 else ' s="2"'
-        cells = []
-        for ci, v in enumerate(row):
-            ref = f"{_col_name(ci)}{ri}"
-            if v == "":
-                cells.append(f'<c r="{ref}"{style}/>')
-            else:
-                cells.append(f'<c r="{ref}"{style} t="inlineStr"><is><t xml:space="preserve">{_x(v)}</t></is></c>')
-        out.append(f'<row r="{ri}">{"".join(cells)}</row>')
-    cols = "".join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(widths))
-    pane = ('<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
-            '<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>') if header else ""
-    return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            f'<worksheet xmlns="{_MAIN}"><sheetViews><sheetView workbookViewId="0">{pane}</sheetView></sheetViews>'
-            f'<cols>{cols}</cols><sheetData>{"".join(out)}</sheetData></worksheet>')
-
-
-_STYLES = (
-    f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="{_MAIN}">'
-    '<fonts count="2"><font><sz val="11"/><name val="맑은 고딕"/><family val="3"/></font>'
-    '<font><b/><sz val="11"/><name val="맑은 고딕"/><family val="3"/></font></fonts>'
-    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
-    '<fill><patternFill patternType="solid"><fgColor rgb="FFFCE9D6"/><bgColor indexed="64"/></patternFill></fill></fills>'
-    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
-    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-    '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
-    '<xf numFmtId="49" fontId="1" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>'
-    '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
-    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
-
 
 def write_template(path) -> Path:
     """엔드포인트 목록 양식 xlsx를 만든다. 셀 서식이 텍스트(@)라 경로·메서드가 숫자·날짜로 바뀌지 않는다."""
-    path = Path(path)
-    files = {
-        "[Content_Types].xml":
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-            '<Default Extension="xml" ContentType="application/xml"/>'
-            f'<Override PartName="/xl/workbook.xml" ContentType="{_CT}.sheet.main+xml"/>'
-            f'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="{_CT}.worksheet+xml"/>'
-            f'<Override PartName="/xl/worksheets/sheet2.xml" ContentType="{_CT}.worksheet+xml"/>'
-            f'<Override PartName="/xl/styles.xml" ContentType="{_CT}.styles+xml"/></Types>',
-        "_rels/.rels":
-            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{_PKG_REL}">'
-            f'<Relationship Id="rId1" Type="{_DOC_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-        "xl/workbook.xml":
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            f'<workbook xmlns="{_MAIN}" xmlns:r="{_DOC_REL}"><bookViews><workbookView activeTab="0"/></bookViews>'
-            '<sheets><sheet name="엔드포인트" sheetId="1" r:id="rId1"/>'
-            '<sheet name="작성 방법" sheetId="2" r:id="rId2"/></sheets></workbook>',
-        "xl/_rels/workbook.xml.rels":
-            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{_PKG_REL}">'
-            f'<Relationship Id="rId1" Type="{_DOC_REL}/worksheet" Target="worksheets/sheet1.xml"/>'
-            f'<Relationship Id="rId2" Type="{_DOC_REL}/worksheet" Target="worksheets/sheet2.xml"/>'
-            f'<Relationship Id="rId3" Type="{_DOC_REL}/styles" Target="styles.xml"/></Relationships>',
-        "xl/styles.xml": _STYLES,
-        "xl/worksheets/sheet1.xml": _sheet_xml([TEMPLATE_HEADERS] + TEMPLATE_EXAMPLES, [42, 16, 34, 14, 8], True),
-        "xl/worksheets/sheet2.xml": _sheet_xml([[line] for line in TEMPLATE_GUIDE], [120], False),
-    }
-    tmp = path.with_name(path.name + ".part")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for name, xml in files.items():
-            z.writestr(name, xml)
-    tmp.replace(path)
-    return path
+    return write_xlsx(path, [
+        Sheet("엔드포인트", [list(TEMPLATE_HEADERS)] + [list(r) for r in TEMPLATE_EXAMPLES],
+              [42, 16, 34, 14, 8]),
+        Sheet("작성 방법", [[line] for line in TEMPLATE_GUIDE], [120], header=False),
+    ])

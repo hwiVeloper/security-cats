@@ -527,7 +527,7 @@ class Api:
 
     @_safe
     def export(self, service: str, kind: str) -> dict:
-        if kind not in ("html", "pdf"):
+        if kind not in ("html", "pdf", "xlsx"):
             raise _UserError("내보내기 형식이 올바르지 않아요")
         r = load_result(service, self._results_dir)
         if r is None:
@@ -538,7 +538,7 @@ class Api:
             return {"ok": False, "path": None}
         exporter = self._exporter or importlib.import_module("napi.report")
         report_error = getattr(exporter, "ReportError", None)
-        export_fn = exporter.export_html if kind == "html" else exporter.export_pdf
+        export_fn = getattr(exporter, f"export_{kind}")
         try:
             export_fn(r, Path(picked))
         except Exception as e:

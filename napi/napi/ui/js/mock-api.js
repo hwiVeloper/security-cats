@@ -733,7 +733,7 @@
       return reply({ ok: true });
     },
     export: function (name, kind) {
-      if (kind !== "html" && kind !== "pdf") return reply({ ok: false, error: "내보내기 형식이 올바르지 않아요" });
+      if (["html", "pdf", "xlsx"].indexOf(kind) < 0) return reply({ ok: false, error: "내보내기 형식이 올바르지 않아요" });
       if (!results[name]) return reply({ ok: false, error: "아직 스캔 결과가 없어요" });
       return reply({ ok: true, path: "C:\\Users\\napi\\Downloads\\napi_" + name + "_20261119." + kind });
     },

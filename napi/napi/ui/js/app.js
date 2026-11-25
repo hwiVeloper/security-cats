@@ -161,6 +161,7 @@
       sel,
       scan,
       withExport ? el("button", { type: "button", class: "btn", onclick: function () { NapiApp.onExport(name, "html"); } }, "HTML") : null,
+      withExport ? el("button", { type: "button", class: "btn", onclick: function () { NapiApp.onExport(name, "xlsx"); } }, "엑셀") : null,
       withExport ? el("button", { type: "button", class: "btn", onclick: function () { NapiApp.onExport(name, "pdf"); } }, "PDF") : null);
   }
 
