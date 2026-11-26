@@ -6,7 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scrub import find_forbidden, load_map, scrub_tree  # noqa: E402
+import json  # noqa: E402
+import subprocess  # noqa: E402
+
+from scrub import find_forbidden, load_map, main, scrub_tree  # noqa: E402
 
 REPL = [("https://mail.real.example", "https://internal.mailapi.com"),
         ("sec@real.example", "security@foo.bar"),
@@ -42,3 +45,53 @@ def test_load_map(tmp_path):
     m = tmp_path / "m.json"
     m.write_text('{"replacements": [["a", "b"]], "forbidden": ["a"]}', encoding="utf-8")
     assert load_map(m) == ([("a", "b")], ["a"])
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "core.autocrlf", "false")
+    m = tmp_path / "map.json"
+    m.write_text(json.dumps({"replacements": [list(r) for r in REPL], "forbidden": FORBID}), encoding="utf-8")
+    return repo, m
+
+
+def _commit(repo, msg):
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+
+
+def test_check_finds_terms_everywhere_without_printing_them(tmp_path, monkeypatch, capsys):
+    repo, m = _repo(tmp_path)
+    (repo / "문서_가.md").write_text("주소 sec@REAL.example\n", encoding="utf-8")
+    (repo / "old.py").write_text('P="/data/websrv/x"\n', encoding="utf-8")
+    _commit(repo, "first real.example")
+    (repo / "old.py").unlink()
+    _commit(repo, "remove old")
+    (repo / "new.py").write_text('Q="/AAA/"\n', encoding="utf-8")  # 추적 안 함, 무시 안 됨
+    monkeypatch.chdir(repo)
+    assert main(["--map", str(m), "--check"]) == 1
+    out = capsys.readouterr().out
+    assert "문서_가.md:1 금지어 #1" in out
+    assert "new.py:1 금지어 #2" in out
+    assert "커밋 메시지" in out and "#1" in out
+    assert "이력 old.py" in out and "#3" in out
+    assert "real.example" not in out.lower() and "/data/websrv" not in out and "/AAA/" not in out
+
+
+def test_check_clean_from_subfolder(tmp_path, monkeypatch, capsys):
+    repo, m = _repo(tmp_path)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "b.md").write_text("ok\n", encoding="utf-8")
+    _commit(repo, "init")
+    monkeypatch.chdir(repo / "sub")
+    assert main(["--map", str(m), "--check"]) == 0
+    assert capsys.readouterr().out.strip().endswith("clean")

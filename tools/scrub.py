@@ -83,8 +83,47 @@ def find_forbidden(files: list[Path], forbidden: list[str]) -> list[tuple[Path, 
     return out
 
 
-def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True).stdout.decode("utf-8", "replace")
+def _git(*args: str, cwd: Path | None = None, input: bytes | None = None) -> bytes:
+    # core.quotepath=off: 한글 파일 이름을 \353\254... 처럼 따옴표로 감싸지 않게
+    return subprocess.run(["git", "-c", "core.quotepath=off", *args], check=True, capture_output=True,
+                          cwd=cwd, input=input).stdout
+
+
+def _worktree_files(top: Path) -> tuple[list[Path], list[str]]:
+    """저장소에 올라갈 수 있는 파일(추적 + 무시 안 된 새 파일). 목록에 있는데 없는 파일은 따로 돌려준다."""
+    names = [n for n in _git("ls-files", "-z", "-co", "--exclude-standard", cwd=top)
+             .decode("utf-8").split("\0") if n]
+    present = [top / n for n in names if (top / n).is_file()]
+    missing = [n for n in names if not (top / n).is_file()]
+    return present, missing
+
+
+def _history_hits(top: Path, forbidden: list[str]) -> list[tuple[str, int, str]]:
+    """모든 커밋에 들어 있는 텍스트 파일 내용과 파일 경로를 검사한다 (지운 파일도 push 하면 나간다)."""
+    seen: dict[str, str] = {}
+    path_hits = []
+    for line in _git("rev-list", "--all", "--objects", cwd=top).decode("utf-8").splitlines():
+        sha, _, path = line.partition(" ")
+        if not path:
+            continue
+        path_hits.extend(("경로 " + path, 0, w) for _, w in _hits_in_text(path, forbidden))
+        if _is_text(Path(path)) and sha not in seen:
+            seen[sha] = path
+    hits = list(dict.fromkeys(path_hits))
+    if not seen:
+        return hits
+    out = _git("cat-file", "--batch", cwd=top, input="\n".join(seen).encode() + b"\n")
+    pos = 0
+    while pos < len(out):
+        header_end = out.index(b"\n", pos)
+        sha, kind, size = out[pos:header_end].decode().split()
+        body = out[header_end + 1: header_end + 1 + int(size)]
+        pos = header_end + 1 + int(size) + 1
+        if kind != "blob":
+            continue
+        text = body.decode("utf-8", errors="replace")
+        hits.extend(("이력 " + seen[sha], n, w) for n, w in _hits_in_text(text, forbidden))
+    return hits
 
 
 def _report(hits, forbidden, label) -> None:
@@ -104,12 +143,20 @@ def main(argv: list[str] | None = None) -> int:
     replacements, forbidden = load_map(args.map)
 
     if args.check:
-        files = [Path(f) for f in _git("ls-files", "-co", "--exclude-standard").splitlines() if f]
+        top = Path(_git("rev-parse", "--show-toplevel").decode("utf-8").strip())
+        files, missing = _worktree_files(top)
         hits = find_forbidden(files, forbidden)
-        msg_hits = _hits_in_text(_git("log", "--all", "--format=%B"), forbidden)
-        _report(hits, forbidden, str)
-        _report([("커밋 메시지", n, w) for n, w in msg_hits], forbidden, str)
-        if hits or msg_hits:
+        msg_hits = []
+        for block in _git("log", "--all", "--format=%H%n%B%x00", cwd=top).decode("utf-8", "replace").split("\0"):
+            sha, _, body = block.strip().partition("\n")
+            msg_hits.extend((f"커밋 메시지 {sha[:7]}", n, w) for n, w in _hits_in_text(body, forbidden))
+        hist = _history_hits(top, forbidden)
+        _report(hits, forbidden, lambda p: p.relative_to(top).as_posix())
+        _report(msg_hits, forbidden, str)
+        _report(hist, forbidden, str)
+        for n in missing:
+            print(f"확인 못 함(목록에 있는데 파일이 없음): {n}")
+        if hits or msg_hits or hist or missing:
             return 1
         print("clean")
         return 0
