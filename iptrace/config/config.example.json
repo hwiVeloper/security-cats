@@ -1,0 +1,85 @@
+{
+  "version": 2,
+  "general": {
+    "theme": "light",
+    "timezone": "Asia/Seoul",
+    "default_period": "7",
+    "save_dir": "out",
+    "local_log_format": "webtob_combined",
+    "own_networks": [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16"
+    ],
+    "trusted_proxies": []
+  },
+  "detect": {
+    "signature_file": "rules/signatures.json",
+    "scan_404_threshold": 20,
+    "upload_paths": [
+      "/upload",
+      "/uploads",
+      "/files",
+      "/attach",
+      "/data",
+      "/fileupload"
+    ]
+  },
+  "report": {
+    "mask_query": false
+  },
+  "ssh": {
+    "user": "logviewer",
+    "auth": "password",
+    "key_file": "",
+    "known_hosts": "config/known_hosts",
+    "connect_timeout": 10,
+    "command_timeout": 600,
+    "server_timeout": 180,
+    "max_lines_per_file": 100000,
+    "workers": 2,
+    "use_ionice": true,
+    "evidence_hash": false
+  },
+  "log_formats": {
+    "webtob_default": "%h %l %u %t \"%r\" %s %b",
+    "webtob_combined": "%h %l %u %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\"",
+    "webtob_error": "[%{%Y-%m-%dT%H:%M:%S}t] [CLIENT(%h)] %*"
+  },
+  "servers": [
+    {
+      "name": "web01-api",
+      "host": "10.2.0.11",
+      "port": 22,
+      "user": "api",
+      "auth": "",
+      "key_file": "",
+      "format": "webtob_combined",
+      "logs": [
+        {
+          "path": "/data/webserver/APP/log/*_ssl/access*.log*",
+          "format": "webtob_combined"
+        },
+        {
+          "path": "/data/webserver/APP/log/*_ssl/error*.log*",
+          "format": "webtob_error"
+        }
+      ]
+    },
+    {
+      "name": "web01-fe",
+      "host": "10.2.0.11",
+      "port": 22,
+      "user": "fe",
+      "auth": "",
+      "key_file": "",
+      "format": "webtob_combined",
+      "logs": [
+        {
+          "path": "/data/webserver/WEB/log/*_ssl/*.log*",
+          "format": "webtob_combined"
+        }
+      ]
+    }
+  ]
+}

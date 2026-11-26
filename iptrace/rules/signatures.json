@@ -1,0 +1,116 @@
+{
+  "version": "2026.10.26",
+  "_설명": "URL(경로+쿼리)을 URL 디코딩 2회 후 소문자로 바꿔 검사한다. UA는 scanner_ua, 메서드는 methods로 검사한다. 정규식은 Python re 문법.",
+  "url": {
+    "SQLI": [
+      "union\\s+(all\\s+)?select",
+      "'\\s*or\\s+'?\\d+'?\\s*=\\s*'?\\d+",
+      "\"\\s*or\\s+\"?\\d+\"?\\s*=\\s*\"?\\d+",
+      "\\bor\\s+1\\s*=\\s*1\\b",
+      "sleep\\s*\\(\\s*\\d+\\s*\\)",
+      "benchmark\\s*\\(",
+      "information_schema",
+      "waitfor\\s+delay",
+      "\\bselect\\b.+\\bfrom\\b",
+      "(--|#|/\\*)\\s*$",
+      "extractvalue\\s*\\(|updatexml\\s*\\(",
+      "\\bdbms_pipe\\.|\\butl_inaddr\\.",
+      "'\\s*;\\s*(drop|insert|update|delete)\\b"
+    ],
+    "XSS": [
+      "<\\s*script",
+      "javascript\\s*:",
+      "on(error|load|mouseover|focus|click)\\s*=",
+      "alert\\s*\\(",
+      "<\\s*(img|svg|iframe)[^>]*>",
+      "document\\.cookie"
+    ],
+    "TRAVERSAL": [
+      "\\.\\./",
+      "\\.\\.\\\\",
+      "/etc/passwd",
+      "/etc/shadow",
+      "win\\.ini",
+      "web-inf/web\\.xml",
+      "boot\\.ini"
+    ],
+    "RCE": [
+      "[;|`]\\s*(id|whoami|uname|wget|curl|cat|ls|nc|bash|sh|ping)\\b",
+      "\\$\\(",
+      "/bin/(ba)?sh",
+      "cmd\\.exe",
+      "powershell"
+    ],
+    "JAVA": [
+      "\\$\\{jndi:",
+      "class\\.module\\.classloader",
+      "%\\{.*\\}",
+      "\\bognl\\b",
+      "\\$\\{.*runtime.*\\}",
+      "java\\.lang\\.runtime"
+    ],
+    "WEBSHELL": [
+      "[?&](cmd|exec|command|execute|shell)=",
+      "/(cmd|shell|webshell|jspspy|behinder|godzilla|antsword)\\w*\\.(jsp|jspx|php|asp|aspx)\\b"
+    ],
+    "SENSITIVE": [
+      "/\\.env\\b",
+      "/\\.git(/|$)",
+      "/\\.svn(/|$)",
+      "\\.(bak|old|orig|backup|swp)$",
+      "\\.(sql|tar|tgz|zip|7z|rar)$",
+      "/manager/html",
+      "/web-inf/",
+      "/phpmyadmin",
+      "/actuator(/|$)",
+      "/server-status",
+      "/(v\\d+\\.\\d+/)?(containers|images)/json$",
+      "/v\\d+\\.\\d+/(info|version|_ping)$"
+    ]
+  },
+  "scanner_ua": [
+    "sqlmap",
+    "nikto",
+    "nmap",
+    "nuclei",
+    "masscan",
+    "zgrab",
+    "gobuster",
+    "dirbuster",
+    "dirb",
+    "wpscan",
+    "acunetix",
+    "nessus",
+    "openvas",
+    "python-requests",
+    "go-http-client",
+    "curl/",
+    "wget/",
+    "httpclient",
+    "libwww-perl",
+    "zmeu",
+    "hydra"
+  ],
+  "methods": [
+    "PUT",
+    "DELETE",
+    "PROPFIND",
+    "PROPPATCH",
+    "MKCOL",
+    "COPY",
+    "MOVE",
+    "TRACE",
+    "TRACK",
+    "CONNECT"
+  ],
+  "webshell_ext": [
+    ".jsp",
+    ".jspx",
+    ".jspf",
+    ".php",
+    ".asp",
+    ".aspx",
+    ".ashx",
+    ".cgi"
+  ]
+}

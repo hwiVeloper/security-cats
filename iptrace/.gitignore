@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/_work/
+build/iptrace/
+dist/
+dist_new/
+반입/
+# 실행 중 생기는 파일 (실제 서버 정보·결과가 들어감)
+config/config.json
+config/known_hosts
+logs/
+out/
+data/
+# 빌드할 때 백업한 설정 (서버 정보·이력이 들어감)
+build/_backup/
+# 릴리스용 zip (GitLab Release에 따로 올린다)
+release/
+# 개인 파일
+codex_demo/
