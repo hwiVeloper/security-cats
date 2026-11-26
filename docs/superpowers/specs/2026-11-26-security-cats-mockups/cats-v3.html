@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>보안냥이 고양이 시안 v3</title>
+<style>
+  :root{--bg:#fbf7f2;--panel:#fff;--ink:#3a2a20;--muted:#8a7a6e;--line:#efe5da;--accent:#e8590c}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;line-height:1.5}
+  main{max-width:1100px;margin:0 auto;padding:24px 16px 60px}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:17px;margin:30px 0 4px}
+  .sub{color:var(--muted);margin:0 0 14px;font-size:14px}
+  .panel{background:var(--panel);border:2px solid var(--line);border-radius:18px;padding:16px}
+  .trio{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .trio figure{margin:0;text-align:center;font-size:13px;color:var(--muted)}
+  .trio svg{width:100%;height:230px;display:block}
+  .trio b{color:var(--ink);font-size:15px}
+  .faces{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .faces figure{margin:0;text-align:center;font-size:13px;color:var(--muted)}
+  .faces svg{width:130px;height:130px;display:block;margin:0 auto}
+  .icons{display:flex;gap:26px;align-items:flex-end;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .icons figure{margin:0;text-align:center}
+  .icons span{display:flex;gap:8px;align-items:flex-end;justify-content:center;margin-bottom:4px}
+  .changes{margin:0;padding-left:18px;font-size:14px}
+  .changes li{margin:2px 0}
+  @media (max-width:700px){.trio,.faces{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="hc"><path d="M46 118 C46 80 70 68 100 68 C130 68 154 80 154 118 C154 148 132 160 100 160 C68 160 46 148 46 118 Z"/></clipPath>
+    <path id="headShape" d="M46 118 C46 80 70 68 100 68 C130 68 154 80 154 118 C154 148 132 160 100 160 C68 160 46 148 46 118 Z"/>
+    <path id="earL" d="M58 96 L52 54 Q53 45 61 49 L92 74 Z"/>
+    <path id="earR" d="M108 74 L139 49 Q147 45 148 54 L142 96 Z"/>
+    <path id="earInL" d="M62 86 L59 61 L80 76 Z"/>
+    <path id="earInR" d="M120 76 L141 61 L138 86 Z"/>
+
+    <g id="headCalico">
+      <use href="#earL" fill="#f6a54c" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffc6c9"/>
+      <use href="#earR" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffc6c9"/>
+      <use href="#headShape" fill="#fffaf3"/>
+      <g clip-path="url(#hc)"><ellipse cx="62" cy="76" rx="30" ry="22" fill="#f6a54c"/><ellipse cx="128" cy="70" rx="10" ry="7" fill="#f6a54c" opacity=".9"/></g>
+      <use href="#headShape" fill="none" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="66" cy="132" rx="10" ry="6" fill="#ff9eb0" opacity=".6"/><ellipse cx="134" cy="132" rx="10" ry="6" fill="#ff9eb0" opacity=".6"/>
+      <ellipse cx="100" cy="125" rx="3.4" ry="2.4" fill="#ff8fa3"/>
+    </g>
+    <g id="headTabby">
+      <use href="#earL" fill="#aeb6c1" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffc6c9"/>
+      <use href="#earR" fill="#aeb6c1" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffc6c9"/>
+      <use href="#headShape" fill="#cdd3db"/>
+      <g clip-path="url(#hc)" stroke="#7d8792" stroke-width="6" stroke-linecap="round" fill="none">
+        <path d="M86 70 l4 16"/><path d="M100 68 v18"/><path d="M114 70 l-4 16"/>
+        <path d="M44 110 h16"/><path d="M44 122 h13"/><path d="M156 110 h-16"/><path d="M156 122 h-13"/>
+      </g>
+      <ellipse cx="100" cy="134" rx="24" ry="15" fill="#fffaf3"/>
+      <use href="#headShape" fill="none" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="66" cy="134" rx="9" ry="5" fill="#ff9eb0" opacity=".5"/><ellipse cx="134" cy="134" rx="9" ry="5" fill="#ff9eb0" opacity=".5"/>
+      <ellipse cx="100" cy="125" rx="3.4" ry="2.4" fill="#ff8fa3"/>
+    </g>
+    <g id="headTux">
+      <use href="#earL" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffb3bd"/>
+      <use href="#earR" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffb3bd"/>
+      <use href="#headShape" fill="#363b47"/>
+      <g clip-path="url(#hc)"><path d="M100 82 L86 126 Q100 146 114 126 Z" fill="#fffaf3"/><ellipse cx="100" cy="138" rx="30" ry="21" fill="#fffaf3"/></g>
+      <use href="#headShape" fill="none" stroke="#241c17" stroke-width="4"/>
+      <ellipse cx="78" cy="140" rx="7" ry="4" fill="#ff9eb0" opacity=".55"/><ellipse cx="122" cy="140" rx="7" ry="4" fill="#ff9eb0" opacity=".55"/>
+      <ellipse cx="100" cy="126" rx="3.6" ry="2.6" fill="#ff8fa3"/>
+    </g>
+
+    <g id="eyesSleep" fill="none" stroke="#5a3d2b" stroke-width="4" stroke-linecap="round"><path d="M68 116 q9 8 18 0"/><path d="M114 116 q9 8 18 0"/></g>
+    <path id="mouthW" d="M93 130 q3.5 4 7 0 q3.5 4 7 0" fill="none" stroke="#5a3d2b" stroke-width="3" stroke-linecap="round"/>
+    <g id="eyesOpen"><ellipse cx="77" cy="114" rx="6" ry="7.5" fill="#5a3d2b"/><circle cx="79" cy="111" r="2.2" fill="#fff"/><ellipse cx="123" cy="114" rx="6" ry="7.5" fill="#5a3d2b"/><circle cx="125" cy="111" r="2.2" fill="#fff"/></g>
+    <clipPath id="lidL"><rect x="60" y="108.6" width="34" height="24"/></clipPath>
+    <clipPath id="lidR"><rect x="106" y="108.6" width="34" height="24"/></clipPath>
+    <g id="eyesCool">
+      <g clip-path="url(#lidL)"><ellipse cx="77" cy="115" rx="8.6" ry="9.8" fill="#6fb6e8"/><circle cx="77" cy="116.4" r="6.2" fill="#1f2a38"/><circle cx="80.2" cy="112.6" r="2.7" fill="#fff"/><circle cx="74.2" cy="119.6" r="1.4" fill="#fff" opacity=".9"/></g>
+      <g clip-path="url(#lidR)"><ellipse cx="123" cy="115" rx="8.6" ry="9.8" fill="#6fb6e8"/><circle cx="123" cy="116.4" r="6.2" fill="#1f2a38"/><circle cx="126.2" cy="112.6" r="2.7" fill="#fff"/><circle cx="120.2" cy="119.6" r="1.4" fill="#fff" opacity=".9"/></g>
+      <path d="M70.6 108.6 H83.4" stroke="#d8dde5" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M116.6 108.6 H129.4" stroke="#d8dde5" stroke-width="2.6" stroke-linecap="round"/>
+    </g>
+    <g id="headset">
+      <path d="M48 110 Q48 56 100 56 Q152 56 152 110" fill="none" stroke="#4c6ef5" stroke-width="7" stroke-linecap="round"/>
+      <rect x="38" y="100" width="16" height="28" rx="7" fill="#4c6ef5" stroke="#2f44b5" stroke-width="3"/>
+      <rect x="146" y="100" width="16" height="28" rx="7" fill="#4c6ef5" stroke="#2f44b5" stroke-width="3"/>
+      <path d="M48 126 Q56 148 82 144" fill="none" stroke="#2f44b5" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="84" cy="144" r="4.5" fill="#2f44b5"/>
+    </g>
+    <g id="hat">
+      <path d="M56 88 Q100 34 144 88 Z" fill="#a67c52" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M74 72 L86 88 M92 60 L106 88 M112 58 L124 82 M70 80 h60 M84 66 h34" stroke="#8a6440" stroke-width="2.5" fill="none"/>
+      <ellipse cx="100" cy="90" rx="50" ry="8" fill="#8a6440" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M94 50 q6 -8 12 0" fill="none" stroke="#5a3d2b" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+    <g id="pawPrint" fill="#d8c6b4"><ellipse cx="0" cy="3" rx="5" ry="4"/><circle cx="-5" cy="-3" r="2"/><circle cx="0" cy="-5" r="2"/><circle cx="5" cy="-3" r="2"/></g>
+
+    <g id="napFull">
+      <rect x="26" y="160" width="196" height="38" rx="19" fill="#c9c2ff" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M44 172 q80 10 160 0" stroke="#b1a8fb" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M196 156 C226 150 226 116 204 112" stroke="#5a3d2b" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M196 156 C226 150 226 116 204 112" stroke="#fffaf3" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <circle cx="205" cy="113" r="6" fill="#f6a54c"/>
+      <ellipse cx="150" cy="140" rx="58" ry="32" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M150 109 q26 -2 40 14 q-20 6 -36 0 q-10 -6 -4 -14z" fill="#f6a54c"/>
+      <g transform="rotate(-6 100 120) translate(-4 6)"><use href="#headCalico"/><use href="#eyesSleep"/><use href="#mouthW"/></g>
+      <ellipse cx="80" cy="166" rx="15" ry="10" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="114" cy="167" rx="15" ry="10" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <circle cx="124" cy="128" r="11" fill="#e8f4ff" stroke="#9fc7ef" stroke-width="2.5"/>
+      <text x="150" y="70" font-size="28" font-weight="900" fill="#7b6cf6">Z</text>
+      <text x="176" y="50" font-size="20" font-weight="900" fill="#9d92f8">z</text>
+    </g>
+
+    <!-- 탐정냥: 고등어 태비, 엎드려 돋보기로 발자국 추적 -->
+    <g id="detFull">
+      <path d="M16 196 H234" stroke="#eadfd3" stroke-width="4" stroke-linecap="round"/>
+      <use href="#pawPrint" transform="translate(24 188) rotate(-20)"/>
+      <use href="#pawPrint" transform="translate(40 178) rotate(-20) scale(.9)"/>
+      <use href="#pawPrint" transform="translate(30 168) rotate(-20) scale(.8)"/>
+      <path d="M200 150 C232 142 230 104 208 98" stroke="#5a3d2b" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M200 150 C232 142 230 104 208 98" stroke="#cdd3db" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <path d="M222 132 l-8 -2 M224 118 l-8 0" stroke="#7d8792" stroke-width="4" stroke-linecap="round"/>
+      <ellipse cx="152" cy="150" rx="56" ry="30" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M134 124 q5 9 2 18 M154 121 q5 10 2 20 M174 124 q5 9 2 17" stroke="#7d8792" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <g transform="translate(-6 2) rotate(-5 100 118)">
+        <use href="#headTabby"/><use href="#eyesOpen"/>
+        <ellipse cx="100" cy="133" rx="3.2" ry="3.8" fill="#5a3d2b"/>
+        <use href="#hat"/>
+      </g>
+      <path d="M70 168 L84 178" stroke="#7a4b2a" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="56" cy="158" r="17" fill="#eaf6ff" fill-opacity=".6" stroke="#5a3d2b" stroke-width="5"/>
+      <path d="M48 152 a10 10 0 0 1 9 -4" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <ellipse cx="88" cy="178" rx="14" ry="9" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="120" cy="178" rx="14" ry="9" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M116 174 v5 M124 174 v5" stroke="#5a3d2b" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="168" y="70" font-size="26" font-weight="900" fill="#8a6440">?</text>
+    </g>
+
+    <!-- 보안냥이: 턱시도, 방패 옆에 앉아 지키기 -->
+    <g id="secFull">
+      <rect x="58" y="182" width="164" height="18" rx="9" fill="#dbe4ff" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M44 106 l-26 10 v26 q0 28 26 40 q26 -12 26 -40 v-26 Z" fill="#4c6ef5" stroke="#2f44b5" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M33 142 l8 8 l15 -17" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M168 186 C210 190 218 156 198 144" stroke="#241c17" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M168 186 C210 190 218 156 198 144" stroke="#363b47" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <path d="M78 186 Q74 128 122 120 Q170 128 166 186 Z" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M122 126 Q102 140 104 186 L140 186 Q142 140 122 126 Z" fill="#fffaf3"/>
+      <path d="M112 150 q10 6 20 0 M114 162 q8 5 16 0" stroke="#efe2d4" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <g transform="translate(22 -22)">
+        <use href="#headTux"/><use href="#eyesCool"/><use href="#mouthW"/>
+        <use href="#headset"/>
+      </g>
+      <ellipse cx="108" cy="186" rx="13" ry="9" fill="#fffaf3" stroke="#241c17" stroke-width="4"/>
+      <ellipse cx="138" cy="186" rx="13" ry="9" fill="#fffaf3" stroke="#241c17" stroke-width="4"/>
+      <path d="M104 182 v5 M112 182 v5 M134 182 v5 M142 182 v5" stroke="#241c17" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+  </defs>
+</svg>
+
+<main>
+  <h1>보안냥이 고양이 가족 시안 v3</h1>
+  <p class="sub">구도는 2번(냅냥과 같은 전신 장면), 털색은 1번(탐정냥 고등어, 보안냥이 턱시도)으로 합쳤어요.</p>
+
+  <div class="panel">
+    <div class="trio">
+      <figure><svg viewBox="10 20 230 190" role="img" aria-label="냅냥"><use href="#napFull"/></svg><b>냅냥</b><br>삼색이 · 방석에서 낮잠 · 잠든 API 찾기</figure>
+      <figure><svg viewBox="10 20 230 190" role="img" aria-label="탐정냥"><use href="#detFull"/></svg><b>탐정냥</b><br>고등어 태비 · 돋보기로 발자국 추적 · 침해의심 IP 점검</figure>
+      <figure><svg viewBox="10 20 230 190" role="img" aria-label="보안냥이"><use href="#secFull"/></svg><b>보안냥이</b><br>턱시도 · 방패 옆에서 지키기 · 본체</figure>
+    </div>
+  </div>
+
+  <h2>얼굴 가까이</h2>
+  <div class="panel faces">
+    <figure><svg viewBox="40 40 124 128"><use href="#headCalico"/><use href="#eyesSleep"/><use href="#mouthW"/></svg>냅냥</figure>
+    <figure><svg viewBox="40 30 124 138"><use href="#headTabby"/><use href="#eyesOpen"/><use href="#mouthW"/><use href="#hat"/></svg>탐정냥</figure>
+    <figure><svg viewBox="34 40 132 128"><use href="#headTux"/><use href="#eyesCool"/><use href="#mouthW"/><use href="#headset"/></svg>보안냥이</figure>
+  </div>
+
+  <h2>작은 아이콘 (40px · 24px)</h2>
+  <div class="panel icons">
+    <figure><span><svg width="40" height="40" viewBox="40 40 124 128"><use href="#headCalico"/><use href="#eyesSleep"/></svg><svg width="24" height="24" viewBox="40 40 124 128"><use href="#headCalico"/><use href="#eyesSleep"/></svg></span>냅냥</figure>
+    <figure><span><svg width="40" height="40" viewBox="40 40 124 128"><use href="#headTabby"/><use href="#eyesOpen"/></svg><svg width="24" height="24" viewBox="40 40 124 128"><use href="#headTabby"/><use href="#eyesOpen"/></svg></span>탐정냥</figure>
+    <figure><span><svg width="40" height="40" viewBox="40 40 124 128"><use href="#headTux"/><use href="#eyesCool"/></svg><svg width="24" height="24" viewBox="40 40 124 128"><use href="#headTux"/><use href="#eyesCool"/></svg></span>보안냥이</figure>
+  </div>
+
+  <h2>이번에 바꾼 것</h2>
+  <div class="panel">
+    <ul class="changes">
+      <li>탐정냥: 치즈 태비 → 고등어 태비 (몸·꼬리·앞발 줄무늬까지 회색으로)</li>
+      <li>보안냥이: 크림+갈색 포인트 → 턱시도 (검은 몸에 흰 가슴털, 흰 양말 앞발, 검은 꼬리)</li>
+      <li>보안냥이 눈꺼풀 선: 검은 털 위에서 보이도록 밝은 회색으로</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>

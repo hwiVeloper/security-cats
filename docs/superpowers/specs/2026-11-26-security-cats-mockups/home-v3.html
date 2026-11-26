@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>보안냥이 홈 화면 시안 v3</title><style>
+  :root{--bg:#fbf7f2;--panel:#fff;--ink:#3a2a20;--muted:#8a7a6e;--line:#efe5da;--accent:#e8590c}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;line-height:1.5}
+  main{max-width:1120px;margin:0 auto;padding:24px 16px 60px}
+  h1{font-size:22px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+  .opt{background:var(--panel);border:2px solid var(--line);border-radius:18px;padding:14px;margin-bottom:22px;cursor:pointer}
+  .opt:hover{border-color:#f3c9a8}.opt.sel{border-color:var(--accent);box-shadow:0 0 0 3px #ffe1cc}
+  .opt-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}.opt-head h3{margin:0;font-size:16px}.opt-head p{margin:0;color:var(--muted);font-size:13px}
+  .letter{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;font-size:13px}
+  .win{border:1px solid #e3d8cc;border-radius:12px;overflow:hidden;box-shadow:0 6px 18px rgba(90,61,43,.08)}
+  .titlebar{height:28px;background:#f3ece4;display:flex;align-items:center;gap:6px;padding:0 10px;font-size:12px;color:var(--muted)}
+  .titlebar i{width:10px;height:10px;border-radius:50%;background:#e3d8cc}.titlebar span{margin-left:8px}
+  .app{display:flex;min-height:430px;background:var(--bg)}
+  .rail{width:74px;background:#fff;border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:6px}
+  .rail-item{position:relative;display:flex;flex-direction:column;align-items:center;font-size:11px;color:var(--muted);padding:6px 4px;border-radius:12px;width:60px}
+  .rail-item svg{width:38px;height:38px}.rail-item.on{background:#fff1e6;color:var(--ink);font-weight:700}
+  .rail-item em{position:absolute;top:2px;right:6px;font-style:normal;font-size:10px;background:#f29a3f;color:#fff;border-radius:99px;padding:0 5px}
+  .rail-item em.red{background:#dc2626}
+  .rail-sep{width:40px;height:1px;background:var(--line);margin:2px 0}
+  .rail-bottom{margin-top:auto}
+  .plus{width:36px;height:36px;border:2px dashed #d8c6b4;border-radius:50%;display:grid;place-items:center;color:#c9b8a6;font-size:18px}
+  .gear{width:36px;height:36px;display:grid;place-items:center;font-size:20px;color:var(--muted)}
+  .ghost{opacity:.75}
+  .content{flex:1;padding:18px 20px}
+  .hero{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:10px 16px;margin-bottom:14px}
+  .hero-cat{width:170px;height:140px;flex:none}
+  .bubble{background:#f7f4ff;border:1px solid #e3defd;border-radius:14px;padding:10px 14px;font-size:14px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px}
+  .card.alert{border-color:#f6c3c3;box-shadow:inset 4px 0 0 #dc2626}
+  .card-top{display:flex;gap:10px;align-items:center}.card-top svg{width:46px;height:46px}
+  .card h4{margin:0;font-size:15px}.card p{margin:0;font-size:12px;color:var(--muted)}
+  .stat{margin:10px 0 2px;font-size:13px}.stat b{font-size:24px;margin-right:4px}.red{color:#dc2626}
+  .chip{display:inline-block;font-size:11px;background:#f4eee7;border-radius:99px;padding:0 7px;margin-left:4px;color:#6b5a4d}.chip.warn{background:#fff1e8;color:#e8590c}
+  .meta{font-size:12px;color:var(--muted);margin:2px 0 0}
+  .actions{display:flex;gap:6px;margin-top:10px}
+  .btn{display:inline-block;font-size:12px;border:1px solid #e3d8cc;background:#fff;border-radius:8px;padding:3px 10px;white-space:nowrap}
+  .btn.ghost{opacity:1;color:var(--muted)}
+  .card.empty{border-style:dashed;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--muted)}
+  .plus.big{width:44px;height:44px;margin-bottom:6px}
+  .brief{display:flex;gap:16px}
+  .brief-main{flex:1}
+  .brief-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}.brief-cat{width:64px;height:64px}
+  .brief-head h4{margin:0;font-size:18px}
+  .todo{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}
+  .todo svg{width:34px;height:34px;flex:none}.todo>div{flex:1}.todo p{margin:2px 0 0}
+  .todo.red-l{box-shadow:inset 4px 0 0 #dc2626}.todo.orange-l{box-shadow:inset 4px 0 0 #e8590c}
+  .brief-side{width:200px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px}
+  .brief-side h5{margin:0 0 8px;font-size:13px;color:var(--muted)}
+  .mini{display:flex;gap:8px;align-items:center;padding:6px 0;font-size:13px}.mini svg{width:32px;height:32px}.mini p{margin:0;font-size:11px;color:var(--muted)}
+  .mini .plus{width:30px;height:30px;font-size:14px}
+  .pc{margin:10px 0 0;padding-left:4px;list-style:none;font-size:13px}.pc li{margin:2px 0}
+</style><style>.list-title{margin:4px 0 10px;font-size:16px}.list-title .meta{font-weight:400;margin-left:6px}.brief .hero{margin-bottom:12px}</style><style>.brief-main{max-width:820px}</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="hc"><path d="M46 118 C46 80 70 68 100 68 C130 68 154 80 154 118 C154 148 132 160 100 160 C68 160 46 148 46 118 Z"/></clipPath>
+    <path id="headShape" d="M46 118 C46 80 70 68 100 68 C130 68 154 80 154 118 C154 148 132 160 100 160 C68 160 46 148 46 118 Z"/>
+    <path id="earL" d="M58 96 L52 54 Q53 45 61 49 L92 74 Z"/>
+    <path id="earR" d="M108 74 L139 49 Q147 45 148 54 L142 96 Z"/>
+    <path id="earInL" d="M62 86 L59 61 L80 76 Z"/>
+    <path id="earInR" d="M120 76 L141 61 L138 86 Z"/>
+
+    <g id="headCalico">
+      <use href="#earL" fill="#f6a54c" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffc6c9"/>
+      <use href="#earR" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffc6c9"/>
+      <use href="#headShape" fill="#fffaf3"/>
+      <g clip-path="url(#hc)"><ellipse cx="62" cy="76" rx="30" ry="22" fill="#f6a54c"/><ellipse cx="128" cy="70" rx="10" ry="7" fill="#f6a54c" opacity=".9"/></g>
+      <use href="#headShape" fill="none" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="66" cy="132" rx="10" ry="6" fill="#ff9eb0" opacity=".6"/><ellipse cx="134" cy="132" rx="10" ry="6" fill="#ff9eb0" opacity=".6"/>
+      <ellipse cx="100" cy="125" rx="3.4" ry="2.4" fill="#ff8fa3"/>
+    </g>
+    <g id="headTabby">
+      <use href="#earL" fill="#aeb6c1" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffc6c9"/>
+      <use href="#earR" fill="#aeb6c1" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffc6c9"/>
+      <use href="#headShape" fill="#cdd3db"/>
+      <g clip-path="url(#hc)" stroke="#7d8792" stroke-width="6" stroke-linecap="round" fill="none">
+        <path d="M86 70 l4 16"/><path d="M100 68 v18"/><path d="M114 70 l-4 16"/>
+        <path d="M44 110 h16"/><path d="M44 122 h13"/><path d="M156 110 h-16"/><path d="M156 122 h-13"/>
+      </g>
+      <ellipse cx="100" cy="134" rx="24" ry="15" fill="#fffaf3"/>
+      <use href="#headShape" fill="none" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="66" cy="134" rx="9" ry="5" fill="#ff9eb0" opacity=".5"/><ellipse cx="134" cy="134" rx="9" ry="5" fill="#ff9eb0" opacity=".5"/>
+      <ellipse cx="100" cy="125" rx="3.4" ry="2.4" fill="#ff8fa3"/>
+    </g>
+    <g id="headTux">
+      <use href="#earL" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/><use href="#earInL" fill="#ffb3bd"/>
+      <use href="#earR" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/><use href="#earInR" fill="#ffb3bd"/>
+      <use href="#headShape" fill="#363b47"/>
+      <g clip-path="url(#hc)"><path d="M100 82 L86 126 Q100 146 114 126 Z" fill="#fffaf3"/><ellipse cx="100" cy="138" rx="30" ry="21" fill="#fffaf3"/></g>
+      <use href="#headShape" fill="none" stroke="#241c17" stroke-width="4"/>
+      <ellipse cx="78" cy="140" rx="7" ry="4" fill="#ff9eb0" opacity=".55"/><ellipse cx="122" cy="140" rx="7" ry="4" fill="#ff9eb0" opacity=".55"/>
+      <ellipse cx="100" cy="126" rx="3.6" ry="2.6" fill="#ff8fa3"/>
+    </g>
+
+    <g id="eyesSleep" fill="none" stroke="#5a3d2b" stroke-width="4" stroke-linecap="round"><path d="M68 116 q9 8 18 0"/><path d="M114 116 q9 8 18 0"/></g>
+    <path id="mouthW" d="M93 130 q3.5 4 7 0 q3.5 4 7 0" fill="none" stroke="#5a3d2b" stroke-width="3" stroke-linecap="round"/>
+    <g id="eyesOpen"><ellipse cx="77" cy="114" rx="6" ry="7.5" fill="#5a3d2b"/><circle cx="79" cy="111" r="2.2" fill="#fff"/><ellipse cx="123" cy="114" rx="6" ry="7.5" fill="#5a3d2b"/><circle cx="125" cy="111" r="2.2" fill="#fff"/></g>
+    <clipPath id="lidL"><rect x="60" y="108.6" width="34" height="24"/></clipPath>
+    <clipPath id="lidR"><rect x="106" y="108.6" width="34" height="24"/></clipPath>
+    <g id="eyesCool">
+      <g clip-path="url(#lidL)"><ellipse cx="77" cy="115" rx="8.6" ry="9.8" fill="#6fb6e8"/><circle cx="77" cy="116.4" r="6.2" fill="#1f2a38"/><circle cx="80.2" cy="112.6" r="2.7" fill="#fff"/><circle cx="74.2" cy="119.6" r="1.4" fill="#fff" opacity=".9"/></g>
+      <g clip-path="url(#lidR)"><ellipse cx="123" cy="115" rx="8.6" ry="9.8" fill="#6fb6e8"/><circle cx="123" cy="116.4" r="6.2" fill="#1f2a38"/><circle cx="126.2" cy="112.6" r="2.7" fill="#fff"/><circle cx="120.2" cy="119.6" r="1.4" fill="#fff" opacity=".9"/></g>
+      <path d="M70.6 108.6 H83.4" stroke="#d8dde5" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M116.6 108.6 H129.4" stroke="#d8dde5" stroke-width="2.6" stroke-linecap="round"/>
+    </g>
+    <g id="headset">
+      <path d="M48 110 Q48 56 100 56 Q152 56 152 110" fill="none" stroke="#4c6ef5" stroke-width="7" stroke-linecap="round"/>
+      <rect x="38" y="100" width="16" height="28" rx="7" fill="#4c6ef5" stroke="#2f44b5" stroke-width="3"/>
+      <rect x="146" y="100" width="16" height="28" rx="7" fill="#4c6ef5" stroke="#2f44b5" stroke-width="3"/>
+      <path d="M48 126 Q56 148 82 144" fill="none" stroke="#2f44b5" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="84" cy="144" r="4.5" fill="#2f44b5"/>
+    </g>
+    <g id="hat">
+      <path d="M56 88 Q100 34 144 88 Z" fill="#a67c52" stroke="#5a3d2b" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M74 72 L86 88 M92 60 L106 88 M112 58 L124 82 M70 80 h60 M84 66 h34" stroke="#8a6440" stroke-width="2.5" fill="none"/>
+      <ellipse cx="100" cy="90" rx="50" ry="8" fill="#8a6440" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M94 50 q6 -8 12 0" fill="none" stroke="#5a3d2b" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+    <g id="pawPrint" fill="#d8c6b4"><ellipse cx="0" cy="3" rx="5" ry="4"/><circle cx="-5" cy="-3" r="2"/><circle cx="0" cy="-5" r="2"/><circle cx="5" cy="-3" r="2"/></g>
+
+    <g id="napFull">
+      <rect x="26" y="160" width="196" height="38" rx="19" fill="#c9c2ff" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M44 172 q80 10 160 0" stroke="#b1a8fb" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M196 156 C226 150 226 116 204 112" stroke="#5a3d2b" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M196 156 C226 150 226 116 204 112" stroke="#fffaf3" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <circle cx="205" cy="113" r="6" fill="#f6a54c"/>
+      <ellipse cx="150" cy="140" rx="58" ry="32" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M150 109 q26 -2 40 14 q-20 6 -36 0 q-10 -6 -4 -14z" fill="#f6a54c"/>
+      <g transform="rotate(-6 100 120) translate(-4 6)"><use href="#headCalico"/><use href="#eyesSleep"/><use href="#mouthW"/></g>
+      <ellipse cx="80" cy="166" rx="15" ry="10" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="114" cy="167" rx="15" ry="10" fill="#fffaf3" stroke="#5a3d2b" stroke-width="4"/>
+      <circle cx="124" cy="128" r="11" fill="#e8f4ff" stroke="#9fc7ef" stroke-width="2.5"/>
+      <text x="150" y="70" font-size="28" font-weight="900" fill="#7b6cf6">Z</text>
+      <text x="176" y="50" font-size="20" font-weight="900" fill="#9d92f8">z</text>
+    </g>
+
+    <!-- 탐정냥: 고등어 태비, 엎드려 돋보기로 발자국 추적 -->
+    <g id="detFull">
+      <path d="M16 196 H234" stroke="#eadfd3" stroke-width="4" stroke-linecap="round"/>
+      <use href="#pawPrint" transform="translate(24 188) rotate(-20)"/>
+      <use href="#pawPrint" transform="translate(40 178) rotate(-20) scale(.9)"/>
+      <use href="#pawPrint" transform="translate(30 168) rotate(-20) scale(.8)"/>
+      <path d="M200 150 C232 142 230 104 208 98" stroke="#5a3d2b" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M200 150 C232 142 230 104 208 98" stroke="#cdd3db" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <path d="M222 132 l-8 -2 M224 118 l-8 0" stroke="#7d8792" stroke-width="4" stroke-linecap="round"/>
+      <ellipse cx="152" cy="150" rx="56" ry="30" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M134 124 q5 9 2 18 M154 121 q5 10 2 20 M174 124 q5 9 2 17" stroke="#7d8792" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <g transform="translate(-6 2) rotate(-5 100 118)">
+        <use href="#headTabby"/><use href="#eyesOpen"/>
+        <ellipse cx="100" cy="133" rx="3.2" ry="3.8" fill="#5a3d2b"/>
+        <use href="#hat"/>
+      </g>
+      <path d="M70 168 L84 178" stroke="#7a4b2a" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="56" cy="158" r="17" fill="#eaf6ff" fill-opacity=".6" stroke="#5a3d2b" stroke-width="5"/>
+      <path d="M48 152 a10 10 0 0 1 9 -4" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <ellipse cx="88" cy="178" rx="14" ry="9" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <ellipse cx="120" cy="178" rx="14" ry="9" fill="#cdd3db" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M116 174 v5 M124 174 v5" stroke="#5a3d2b" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="168" y="70" font-size="26" font-weight="900" fill="#8a6440">?</text>
+    </g>
+
+    <!-- 보안냥이: 턱시도, 방패 옆에 앉아 지키기 -->
+    <g id="secFull">
+      <rect x="58" y="182" width="164" height="18" rx="9" fill="#dbe4ff" stroke="#5a3d2b" stroke-width="4"/>
+      <path d="M44 106 l-26 10 v26 q0 28 26 40 q26 -12 26 -40 v-26 Z" fill="#4c6ef5" stroke="#2f44b5" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M33 142 l8 8 l15 -17" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M168 186 C210 190 218 156 198 144" stroke="#241c17" stroke-width="18" fill="none" stroke-linecap="round"/>
+      <path d="M168 186 C210 190 218 156 198 144" stroke="#363b47" stroke-width="10" fill="none" stroke-linecap="round"/>
+      <path d="M78 186 Q74 128 122 120 Q170 128 166 186 Z" fill="#363b47" stroke="#241c17" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M122 126 Q102 140 104 186 L140 186 Q142 140 122 126 Z" fill="#fffaf3"/>
+      <path d="M112 150 q10 6 20 0 M114 162 q8 5 16 0" stroke="#efe2d4" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <g transform="translate(22 -22)">
+        <use href="#headTux"/><use href="#eyesCool"/><use href="#mouthW"/>
+        <use href="#headset"/>
+      </g>
+      <ellipse cx="108" cy="186" rx="13" ry="9" fill="#fffaf3" stroke="#241c17" stroke-width="4"/>
+      <ellipse cx="138" cy="186" rx="13" ry="9" fill="#fffaf3" stroke="#241c17" stroke-width="4"/>
+      <path d="M104 182 v5 M112 182 v5 M134 182 v5 M142 182 v5" stroke="#241c17" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+  </defs>
+</svg>
+<main>
+  <h1>보안냥이 홈 화면 시안 v3</h1>
+  <p class="sub">오른쪽 고양이 패널을 뺐어요. 고양이별 상태는 왼쪽 레일의 숫자 배지로 보여요.</p>
+  <div class="opt" data-choice="B-briefing">
+    <div class="opt-head"><span class="letter">✓</span><h3>B 브리핑형 + A의 보안냥이 요약</h3><p>위에는 A처럼 보안냥이 전신 + 말풍선 요약, 아래는 B의 "오늘 확인할 것" 목록.</p></div>
+    <div class="win">
+      <div class="titlebar"><i></i><i></i><i></i><span>보안냥이</span></div>
+      <div class="app">
+        <nav class="rail">
+          <div class="rail-item on"><svg viewBox="40 40 124 128"><use href="#headTux"/><use href="#eyesCool"/></svg><span>홈</span></div>
+          <div class="rail-sep"></div>
+          <div class="rail-item"><svg viewBox="40 40 124 128"><use href="#headCalico"/><use href="#eyesSleep"/></svg><span>냅냥</span><em>2</em></div>
+          <div class="rail-item"><svg viewBox="40 40 124 128"><use href="#headTabby"/><use href="#eyesOpen"/></svg><span>탐정냥</span><em class="red">1</em></div>
+          <div class="rail-item ghost"><div class="plus">＋</div><span>곧 합류</span></div>
+          <div class="rail-bottom"><div class="rail-item"><div class="gear">⚙</div><span>설정</span></div></div>
+        </nav>
+        <section class="content brief">
+          <div class="brief-main">
+            <div class="hero">
+              <svg class="hero-cat" viewBox="10 20 230 190"><use href="#secFull"/></svg>
+              <div class="bubble"><b>안녕하세요, 보안냥이예요.</b><br>오늘 확인할 게 <b>3건</b> 있어요. 가장 급한 건 탐정냥이 찾은 <b>조치 필요 IP</b>예요. 냅냥은 아직 호출되는 deprecated API를 봤대요.</div>
+            </div>
+            <h4 class="list-title">오늘 확인할 것 3건 <span class="meta">11월 26일 목요일 · 고양이 2마리가 보고했어요</span></h4>
+            <div class="todo red-l">
+              <svg viewBox="40 30 124 138"><use href="#headTabby"/><use href="#eyesOpen"/><use href="#hat"/></svg>
+              <div><b>조치 필요</b> · 203.0.113.7 이 웹쉘 경로에 200 응답을 받았어요<p class="meta">탐정냥 · 11/25 14:20 점검 · WAS-03</p></div><span class="btn">보기</span>
+            </div>
+            <div class="todo orange-l">
+              <svg viewBox="40 40 124 128"><use href="#headCalico"/><use href="#eyesSleep"/></svg>
+              <div><b>잠꼬대 2개</b> · deprecated 인데 아직 호출되는 API가 있어요<p class="meta">냅냥 · 라운드페이 API · 11/24 스캔</p></div><span class="btn">보기</span>
+            </div>
+            <div class="todo">
+              <svg viewBox="40 30 124 138"><use href="#headTabby"/><use href="#eyesOpen"/><use href="#hat"/></svg>
+              <div><b>검토 전 2건</b> · 확인 완료 표시를 안 한 점검이 있어요<p class="meta">탐정냥 · 점검 이력</p></div><span class="btn">보기</span>
+            </div>
+          </div>
+          
+        </section>
+      </div>
+    </div>
+    </div>
+
+</main>
+
+<script>document.querySelectorAll('.opt').forEach(function(o){o.addEventListener('click',function(){document.querySelectorAll('.opt').forEach(function(x){x.classList.remove('sel')});o.classList.add('sel')})})</script>
+</body></html>
