@@ -1,0 +1,319 @@
+"""설정 파일(YAML) 로드/저장/검증."""
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from dataclasses import asdict
+from datetime import date, datetime
+from pathlib import Path
+
+import yaml
+
+from .logformat import BUILTIN_FORMATS, FormatError, compile_format
+from .remote.command import find_args
+from .models import (
+    AppConfig, CustomFormat, LogFormatDef, LogPath, Note, PathMapping, ServerConfig, ServiceConfig,
+    Settings, SpecSource, Thresholds,
+)
+
+
+class ConfigError(Exception):
+    pass
+
+
+def _to_dict(cfg: AppConfig) -> dict:
+    # asdict는 중첩 dataclass와 None 값(custom_format, key_file)을 키째 유지한다.
+    d = asdict(cfg)
+    for s in d["services"]:
+        # None(기본 패턴)은 쓰지 않는다: 기본값이 바뀌면 그대로 따라가게
+        if s.get("probe_patterns") is None:
+            s.pop("probe_patterns", None)
+    return d
+
+
+_INT_RE = re.compile(r"[+-]?[0-9]+")
+
+
+def _int(value, name: str) -> int:
+    """손으로 고친 설정의 정수 칸. 정수와 숫자 문자열("22")만 받는다."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and _INT_RE.fullmatch(value.strip()):
+        return int(value.strip())
+    raise ConfigError(f"설정 파일의 {name} 값은 정수여야 합니다: {value!r}")
+
+
+def _str(value) -> str:
+    """문자열 칸. YAML이 숫자·날짜로 읽은 값(예: date: 2026-11-19)도 문자열로 되돌린다."""
+    if value is None:
+        return ""
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def _fields(d, ints: tuple[str, ...] = (), strs: tuple[str, ...] = (),
+            optional_strs: tuple[str, ...] = ()) -> dict:
+    """dataclass에 넘기기 전에 알려진 칸의 형을 맞춘다. 모르는 키는 그대로 둬서
+    dataclass 생성이 TypeError(→ ConfigError)를 내게 한다."""
+    if d is not None and not isinstance(d, dict):
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: 매핑이 와야 할 자리에 {d!r}")
+    out = dict(d or {})
+    for k in ints:
+        if k in out:
+            out[k] = _int(out[k], k)
+    for k in strs:
+        if k in out:
+            out[k] = _str(out[k])
+    for k in optional_strs:
+        if k in out and out[k] is not None:
+            out[k] = _str(out[k])
+    return out
+
+
+_SERVER_STRS = ("name", "host", "user", "auth")
+_SETTINGS_INTS = ("max_parallel_servers", "remote_timeout_sec", "max_rows", "top_404")
+_LEGACY_PATH_KEYS = ("log_glob", "log_globs")
+
+
+def _bad(msg: str) -> ConfigError:
+    return ConfigError(f"설정 파일 내용이 올바르지 않습니다: {msg}")
+
+
+def _as_list(items, key: str) -> list:
+    """목록 칸. 값 하나(손으로 쓴 key: /a/b)는 [값]으로, 빈 값은 []로 읽는다."""
+    if items is None:
+        return []
+    if isinstance(items, dict):
+        raise _bad(f"{key}는 목록이어야 합니다: {items!r}")
+    return items if isinstance(items, list) else [items]
+
+
+def _custom(cf, fmt: str = "custom") -> CustomFormat | None:
+    # 경로마다 따로 만든다 (한 경로를 고쳐도 다른 경로가 같이 바뀌지 않게).
+    # 서버의 custom_format은 형식이 custom인 경로만 물려받는다.
+    return CustomFormat(**cf) if cf and fmt == "custom" else None
+
+
+def _log_paths(sv: dict) -> None:
+    """서버 칸의 로그 경로를 log_paths(LogPath 목록)로 맞춘다.
+
+    log_paths: [{glob, log_format?, custom_format?}]. 항목이 문자열이면 glob이다.
+    빠진 형식은 서버의 log_format/custom_format(없으면 webtob)을 물려받는다.
+    v1/확장 설정의 log_glob: x / log_globs: [...]는 경로마다 서버 형식을 물려받는 log_paths로
+    읽는다. 저장할 때는 log_paths만 쓴다."""
+    default_fmt = _str(sv.pop("log_format", "webtob"))
+    default_cf = sv.pop("custom_format", None)
+    legacy = [k for k in _LEGACY_PATH_KEYS if k in sv]
+    if "log_paths" in sv and legacy:
+        raise _bad(f"log_paths와 {legacy[0]}를 함께 쓸 수 없습니다")
+    if len(legacy) > 1:
+        raise _bad("log_glob과 log_globs를 함께 쓸 수 없습니다")
+    if legacy:
+        globs = _as_list(sv.pop(legacy[0]), legacy[0])
+        sv["log_paths"] = [LogPath(_str(g), default_fmt, _custom(default_cf, default_fmt)) for g in globs]
+        return
+    if "log_paths" not in sv:
+        return  # 빠진 칸은 dataclass 생성이 TypeError(→ ConfigError)로 알린다
+    paths = []
+    for item in _as_list(sv["log_paths"], "log_paths"):
+        if isinstance(item, (list, dict)):
+            d = _fields(item, strs=("glob", "log_format"))
+            if "glob" not in d:
+                raise _bad(f"log_paths 항목에 glob이 없습니다: {item!r}")
+            d.setdefault("log_format", default_fmt)
+            d["custom_format"] = (_custom(d["custom_format"]) if "custom_format" in d
+                                  else _custom(default_cf, d["log_format"]))
+            paths.append(LogPath(**d))
+        else:
+            paths.append(LogPath(_str(item), default_fmt, _custom(default_cf, default_fmt)))
+    sv["log_paths"] = paths
+
+
+def _log_formats(items) -> list[LogFormatDef]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: log_formats는 목록이어야 합니다: {items!r}")
+    return [LogFormatDef(**_fields(f, strs=("name", "pattern"))) for f in items]
+
+
+def _from_dict(d: dict) -> AppConfig:
+    if not isinstance(d, dict):
+        raise ConfigError("설정 파일 형식이 올바르지 않습니다. (최상위가 매핑이 아님)")
+    try:
+        services = []
+        for s in d.get("services") or []:
+            servers = []
+            for sv in s.get("servers") or []:
+                sv = _fields(sv, ints=("port",), strs=_SERVER_STRS, optional_strs=("key_file",))
+                _log_paths(sv)
+                servers.append(ServerConfig(**sv))
+            services.append(ServiceConfig(
+                name=_str(s["name"]),
+                spec=SpecSource(**_fields(s.get("spec"), strs=("type", "source", "location"))),
+                servers=servers,
+                path_mapping=PathMapping(**_fields(s.get("path_mapping"),
+                                                   strs=("strip_prefix", "add_prefix"))),
+                thresholds=Thresholds(**_fields(s.get("thresholds"),
+                                                ints=("awake_days", "min_coverage_days"))),
+                exclude_paths=[_str(x) for x in (s.get("exclude_paths") or [])],
+                notes={_str(k): Note(**_fields(v, strs=("reason", "author", "date")))
+                       for k, v in (s.get("notes") or {}).items()},
+                api_scopes=[_str(x).strip() for x in _as_list(s.get("api_scopes"), "api_scopes")],
+                probe_patterns=(None if s.get("probe_patterns") is None else
+                                [_str(x) for x in _as_list(s["probe_patterns"], "probe_patterns")]),
+            ))
+        return AppConfig(
+            services=services,
+            settings=Settings(**_fields(d.get("settings"), ints=_SETTINGS_INTS,
+                                        strs=("default_window",))),
+            version=d.get("version", 1),
+            log_formats=_log_formats(d.get("log_formats")),
+        )
+    except (TypeError, KeyError, AttributeError) as e:
+        raise ConfigError(f"설정 파일 내용이 올바르지 않습니다: {e}") from e
+
+
+def load_config(path: Path) -> AppConfig:
+    path = Path(path)
+    if not path.exists():
+        return AppConfig(services=[])
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ConfigError(f"설정 파일을 읽을 수 없습니다 ({path}): {e}") from e
+    except UnicodeDecodeError as e:
+        raise ConfigError(
+            f"설정 파일의 인코딩이 UTF-8이 아닙니다 ({path}). UTF-8로 저장해 주세요: {e}") from e
+    except OSError as e:
+        raise ConfigError(f"설정 파일을 열 수 없습니다 ({path}): {e}") from e
+    if data is None:
+        return AppConfig(services=[])
+    return _from_dict(data)
+
+
+def save_config(cfg: AppConfig, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = yaml.safe_dump(_to_dict(cfg), allow_unicode=True, sort_keys=False)
+    # 같은 폴더의 임시 파일에 쓰고 바꿔 끼운다 (쓰다가 실패해도 원래 파일은 그대로).
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _below(value, minimum: int) -> bool:
+    return isinstance(value, bool) or not isinstance(value, int) or value < minimum
+
+
+_GLOB_CONTROL_RE = re.compile("[\x00-\x1f]")  # C0 제어 문자 (탭, 줄바꿈, NUL 포함)
+_SETTINGS_MIN = {"max_parallel_servers": 1, "remote_timeout_sec": 1, "max_rows": 1, "top_404": 0}
+
+
+def _validate_log_formats(formats: list[LogFormatDef]) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for f in formats:
+        label = f"로그 형식 '{f.name}'"
+        if not f.name.strip():
+            errors.append("로그 형식 이름이 비어 있습니다.")
+        elif f.name in BUILTIN_FORMATS or f.name == "custom":
+            errors.append(f"{label}: 기본 제공 형식 이름과 같아서 쓸 수 없습니다.")
+        elif f.name in seen:
+            errors.append(f"{label}: 형식 이름이 중복되었습니다.")
+        seen.add(f.name)
+        try:
+            compile_format(f.pattern)
+        except FormatError as e:
+            errors.append(f"{label}: {e}")
+    return errors
+
+
+def validate_config(cfg: AppConfig) -> list[str]:
+    errors: list[str] = []
+    for name, minimum in _SETTINGS_MIN.items():
+        if _below(getattr(cfg.settings, name), minimum):
+            errors.append(f"설정 {name}은(는) {minimum} 이상의 정수여야 합니다.")
+    errors += _validate_log_formats(cfg.log_formats)
+    known_formats = {*BUILTIN_FORMATS, "custom", *(f.name for f in cfg.log_formats)}
+    seen: set[str] = set()
+    for svc in cfg.services:
+        label = f"서비스 '{svc.name}'"
+        if not svc.name.strip():
+            errors.append("서비스 이름이 비어 있습니다.")
+        if svc.name in seen:
+            errors.append(f"{label}: 서비스 이름이 중복되었습니다.")
+        seen.add(svc.name)
+        for th in ("awake_days", "min_coverage_days"):
+            if _below(getattr(svc.thresholds, th), 1):
+                errors.append(f"{label}: 기준값 {th}은(는) 1 이상의 정수여야 합니다.")
+        errors += _scope_problems(svc, label)
+        if svc.spec.type not in ("openapi", "endpoints"):
+            errors.append(f"{label}: 명세 형식을 알 수 없어요: {svc.spec.type}")
+        elif svc.spec.type == "endpoints" and svc.spec.source != "file":
+            errors.append(f"{label}: 엔드포인트 목록(엑셀) 명세는 파일로만 넣을 수 있어요.")
+        for sv in svc.servers:
+            sl = f"{label} / 서버 '{sv.name}'"
+            if not sv.host.strip():
+                errors.append(f"{sl}: 호스트가 비어 있습니다.")
+            if _below(sv.port, 1) or sv.port > 65535:
+                errors.append(f"{sl}: 포트는 1~65535 사이의 정수여야 합니다.")
+            if sv.auth == "key" and not sv.key_file:
+                errors.append(f"{sl}: 키 인증인데 키 파일이 지정되지 않았습니다.")
+            if not sv.log_paths:
+                errors.append(f"{sl}: 로그 경로를 하나 이상 지정해야 합니다.")
+            for lp in sv.log_paths:
+                problem = _glob_problem(lp.glob)
+                if problem:
+                    errors.append(f"{sl}: {problem}")
+                pl = f"{sl}: 경로 {lp.glob}"
+                if lp.log_format not in known_formats:
+                    errors.append(f"{pl}: 모르는 로그 형식이에요: {lp.log_format}")
+                elif lp.log_format == "custom" and lp.custom_format is None:
+                    errors.append(f"{pl}: 로그 형식이 custom인데 사용자 정의 형식이 없습니다.")
+    return errors
+
+
+def _scope_problems(svc: ServiceConfig, label: str) -> list[str]:
+    """API 범위 접두사와 스캐너 패턴 검사. 설정 화면(settings.js)은 따로 검사하지 않고
+    이 문구("API 범위" / "스캐너 패턴")를 보고 해당 칸에 오류를 붙인다."""
+    errors: list[str] = []
+    for scope in svc.api_scopes:
+        if (not scope.startswith("/") or _GLOB_CONTROL_RE.search(scope)
+                or "*" in scope or "?" in scope or "//" in scope):
+            errors.append(f"{label}: API 범위는 '/'로 시작하고 * ? // 와 제어 문자가 없어야 해요:"
+                          f" {scope!r}")
+    for pat in svc.probe_patterns or []:
+        if not pat.strip() or _GLOB_CONTROL_RE.search(pat):
+            errors.append(f"{label}: 스캐너 패턴은 비어 있거나 제어 문자를 담을 수 없어요: {pat!r}")
+    return errors
+
+
+def _glob_problem(glob: str) -> str | None:
+    """로그 경로 하나의 오류 문구 (끝에 ": <경로>"). 통과하면 스캔 때 find_args도 통과한다.
+    napi/ui/js/settings.js의 globProblem과 같은 규칙이다."""
+    if _GLOB_CONTROL_RE.search(glob):
+        return f"로그 경로에 제어 문자를 쓸 수 없습니다: {glob}"
+    if not glob.startswith("/"):
+        return f"로그 경로는 '/'로 시작해야 합니다: {glob}"
+    directory = glob[:glob.rfind("/") + 1]  # 끝의 "/"까지 (파일 이름 바로 앞의 "//"도 본다)
+    # 디렉터리 부분의 * ? [ 는 허용한다 (napi.remote.command.find_args가 깊이를 고정해 찾는다)
+    # 같은 디렉터리를 다른 글자로 쓰면 find 출력이 달라져 같은 파일을 두 번 읽는다 (D2)
+    if any(part in directory for part in ("//", "/./", "/../")):
+        return f"경로에 // 나 . / .. 를 쓸 수 없어요: {glob}"
+    try:
+        find_args(glob)
+    except ValueError as e:
+        reason = str(e).split(": ", 1)[0]  # 끝의 repr(경로)는 떼고 ": <경로>"로 붙인다
+        return f"로그 경로를 쓸 수 없습니다 — {reason}: {glob}"
+    return None

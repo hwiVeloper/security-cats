@@ -1,0 +1,22 @@
+{
+  "name": "napi-showreel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "napi 소개 쇼릴 (Remotion)",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render NapiReel out/napi-showreel.mp4",
+    "still": "remotion still NapiReel"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.545",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.545"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "puppeteer-core": "^24.43.1",
+    "typescript": "5.8.3"
+  }
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>napi 리포트</title>
+<style>
+/*NAPI_CSS*/
+</style>
+</head>
+<body>
+<main id="napi-report"></main>
+<script>
+/*NAPI_JS*/
+</script>
+<script>
+(function () {
+  "use strict";
+  var data = "__NAPI_DATA__";
+  var print = /[?&]print=1(?:&|$)/.test(window.location.search);
+  document.title = "napi 리포트 — " + (data.service || "");
+  window.NapiRender.renderReport(document.getElementById("napi-report"), data, { print: print });
+})();
+</script>
+</body>
+</html>

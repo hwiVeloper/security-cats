@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napi"
+version = "0.1.0"
+description = "Swagger/OpenAPI 명세와 접근 로그를 비교해 사용되지 않는 API를 찾는 도구"
+requires-python = ">=3.12"
+dependencies = [
+    "pywebview>=5",
+    "paramiko>=3.2",
+    "PyYAML>=6",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pyinstaller",
+    "Pillow",
+]
+
+[tool.setuptools.packages.find]
+include = ["napi*"]
+
+[tool.setuptools.package-data]
+napi = ["ui/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
